@@ -33,3 +33,6 @@ Thumbs.db
 # Local secrets
 local.properties
 *.env
+
+# Flashback jar (licence restrictive — JAMAIS committer)
+libs/

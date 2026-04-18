@@ -21,8 +21,9 @@ dependencies {
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
-    // Flashback : added in Task 9 once Maven coordinate is confirmed
-    // modCompileOnly "com.moulberry:flashback:${project.flashback_version}"
+    // Flashback : no public Maven, consumed from a local jar in libs/
+    // (not committed — see .gitignore). Download from https://modrinth.com/mod/flashback
+    modCompileOnly files("libs/Flashback-${project.flashback_version}-for-MC${project.minecraft_version}.jar")
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
