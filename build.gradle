@@ -23,7 +23,14 @@ dependencies {
 
     // Flashback : no public Maven, consumed from a local jar in libs/
     // (not committed — see .gitignore). Download from https://modrinth.com/mod/flashback
-    modCompileOnly files("libs/Flashback-${project.flashback_version}-for-MC${project.minecraft_version}.jar")
+    // Dependency is optional so CI can build without the jar; dev environments
+    // that need Flashback compile-time bindings must populate libs/ manually.
+    def flashbackJar = file("libs/Flashback-${project.flashback_version}-for-MC${project.minecraft_version}.jar")
+    if (flashbackJar.exists()) {
+        modCompileOnly files(flashbackJar)
+    } else {
+        logger.warn("Flashback jar not found at ${flashbackJar.path} — compiling without Flashback API bindings.")
+    }
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
