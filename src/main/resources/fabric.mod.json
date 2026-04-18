@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "multiview",
+  "version": "${version}",
+  "name": "MultiView",
+  "description": "Fusionne plusieurs replays Flashback d'une même session en un seul replay unifié.",
+  "authors": [
+    "zeffut"
+  ],
+  "contact": {
+    "homepage": "https://github.com/zeffut/MultiView",
+    "sources": "https://github.com/zeffut/MultiView"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "fr.zeffut.multiview.MultiViewMod"
+    ]
+  },
+  "mixins": [
+    "multiview.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21",
+    "java": ">=21"
+  },
+  "suggests": {
+    "flashback": "*"
+  }
+}
