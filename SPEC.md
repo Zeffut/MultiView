@@ -63,7 +63,7 @@ Nom de travail : **`flashback-merger`** (à ajuster avant publication).
 - **Fabric API** : 0.141.3+1.21.11
 - **Yarn mappings** : 1.21.11+build.4
 - **Fabric Loom** : 1.16.1
-- **Build** : Gradle 8.x + Fabric Loom
+- **Build** : Gradle 9.4.1 (wrapper) + Fabric Loom 1.16.1
 - **Dépendances** :
   - `fabric-loader` et `fabric-api`
   - `flashback` en `modCompileOnly` (non redistribué)
