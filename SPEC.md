@@ -370,9 +370,19 @@ Ces questions nécessitent d'avoir avancé un peu dans le reverse-engineering av
 
 > Claude Code : tiens à jour cette section au fur et à mesure du projet. Notes d'implémentation, décisions d'archi, obstacles rencontrés, solutions adoptées.
 
-### [Date] — Découverte initiale
+### 2026-04-19 — Découverte initiale
 - Le format `.flashback` est un ZIP, confirmé via docs ServerReplay.
 - Licence Flashback = restrictive, donc addon strictement séparé, aucun code de Flashback redistribué.
+
+### 2026-04-19 — Phase 0 terminée
+- Nom du mod finalisé : **MultiView** (mod_id : `multiview`, package : `fr.zeffut.multiview`).
+- Versions verrouillées : cf. section 2.4 (MC 1.21.11, Flashback 0.39.4, Loom 1.16.1).
+- Gradle wrapper bumpé à 9.4.1 après échec du 8.10 (Loom 1.16.1 publie ses métadonnées avec `org.gradle.plugin.api-version=9.4.0`, incompatible avec Gradle 8).
+- Scaffolding Fabric posé : `fabric.mod.json`, `multiview.mixins.json` (config vide, placeholder Phase 5), entrypoint `MultiViewMod` qui logue au démarrage.
+- Dépendance Flashback `modCompileOnly` rendue conditionnelle sur la présence du jar dans `libs/` (CI build sans, dev local avec).
+- Tests JUnit 5 + CI GitHub Actions en place. `./gradlew runClient` valide : MultiView loaded + Flashback loaded dans la même instance.
+- Warning observé (non bloquant) : `lattice1219.mixins.json:MixinDropdownWidgetEntry.render` échoue au APPLY — mixin de la lib `lattice` bundlée dans Flashback 0.39.4, probable incompat mineure avec mappings 1.21.11+build.4. N'affecte pas le core replay, à surveiller en Phase 5.
+- Flashback jar placé manuellement dans `libs/` et `run/mods/` — tous deux gitignorés.
 
 ---
 
