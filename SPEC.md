@@ -57,7 +57,12 @@ Nom de travail : **`flashback-merger`** (à ajuster avant publication).
 ### 2.4 Stack technique fixée
 - **Langage** : Java 21
 - **Loader** : Fabric (version aligné avec Flashback cible)
-- **Minecraft** : 1.21.4 pour commencer (aligné avec la version la plus stable de Flashback au moment de la rédaction)
+- **Minecraft** : 1.21.1 (plus ancienne version supportée par Flashback — maximise la compat jusqu'à 1.21.11)
+- **Flashback cible (modCompileOnly)** : 0.39.4
+- **Fabric Loader** : 0.19.2
+- **Fabric API** : 0.116.11+1.21.1
+- **Yarn mappings** : 1.21.1+build.3
+- **Fabric Loom** : 1.16.1
 - **Build** : Gradle 8.x + Fabric Loom
 - **Dépendances** :
   - `fabric-loader` et `fabric-api`
