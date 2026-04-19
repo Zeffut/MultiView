@@ -137,14 +137,27 @@ public final class MergeOrchestrator {
             destTmp = destFinal.resolveSibling("." + destFinal.getFileName() + ".tmp");
             Files.createDirectories(destTmp);
 
-            // 6. Concat caches
-            progress.accept("Remapping caches...");
-            List<Path> cacheDirs = new ArrayList<>();
-            for (FlashbackReplay r : replays) {
-                cacheDirs.add(r.folder().resolve("level_chunk_caches"));
+            // 6. Copy primary source's caches unchanged (Phase 3 MVP).
+            // Phase 4 debt: proper flat-entry concat + remap across all sources.
+            progress.accept("Copying primary source caches...");
+            Path primaryCacheDir = replays.get(primaryIdx).folder().resolve("level_chunk_caches");
+            Path destCacheDir = destTmp.resolve("level_chunk_caches");
+            Files.createDirectories(destCacheDir);
+            if (Files.isDirectory(primaryCacheDir)) {
+                try (var entries = Files.list(primaryCacheDir)) {
+                    entries.forEach(p -> {
+                        try {
+                            Files.copy(p, destCacheDir.resolve(p.getFileName()));
+                        } catch (IOException ex) {
+                            throw new RuntimeException(ex);
+                        }
+                    });
+                }
             }
-            cacheRemapper.concat(cacheDirs, destTmp.resolve("level_chunk_caches"));
-            report.stats.chunkCachesConcatenated = cacheRemapper.concatenatedCount();
+            long cacheCount;
+            try (var s = Files.list(destCacheDir)) { cacheCount = s.count(); }
+            report.stats.chunkCachesConcatenated = (int) cacheCount;
+            // cacheRemapper kept but not used end-to-end — available for Phase 4.
 
             // 7. Init EgoRouter — registry from primary source's first segment (Task 16)
             List<String> egoRegistry = extractRegistryFromFirstSegment(replays.get(primaryIdx));
@@ -225,16 +238,14 @@ public final class MergeOrchestrator {
             int mergedTotalTicks,
             String destName) {
 
-        // Aggregate chunks: union across all sources, overwriting on conflict
+        // Phase 3: we write exactly one merged segment (c0.flashback) covering all ticks.
+        // Source replays may have c0, c1, … but the merged output has only c0.
+        // Phase 4 can split into multiple segments if needed.
         Map<String, Object> chunksMap = new LinkedHashMap<>();
-        for (FlashbackReplay r : replays) {
-            r.metadata().chunks().forEach((key, ci) -> {
-                Map<String, Object> ciMap = new LinkedHashMap<>();
-                ciMap.put("duration", ci.duration());
-                ciMap.put("forcePlaySnapshot", ci.forcePlaySnapshot());
-                chunksMap.put(key, ciMap);
-            });
-        }
+        Map<String, Object> c0Map = new LinkedHashMap<>();
+        c0Map.put("duration", mergedTotalTicks);
+        c0Map.put("forcePlaySnapshot", false);
+        chunksMap.put("c0.flashback", c0Map);
 
         // Build JSON representation using Gson's JsonObject to avoid reflection
         com.google.gson.Gson gson = new com.google.gson.GsonBuilder()
@@ -376,11 +387,19 @@ public final class MergeOrchestrator {
                         }
                     }
                     case CACHE_REF -> {
-                        if (cur.head().action() instanceof Action.CacheChunkRef ref
+                        // Phase 3 MVP : only emit CacheChunkRef from primary source (whose caches
+                        // we kept 1:1 in level_chunk_caches/). Secondary sources' cache refs are
+                        // dropped — loses chunks but avoids invalid indices.
+                        // Phase 4 debt : proper flat-entry concat + remap.
+                        if (cur.sourceIdx() == ctx.primarySourceIdx
+                                && cur.head().action() instanceof Action.CacheChunkRef ref
                                 && cacheRefOrdinal >= 0) {
-                            int globalIdx = cacheRemapper.remap(cur.sourceIdx(), ref.cacheIndex());
-                            byte[] newPayload = writeVarIntToBytes(globalIdx);
+                            // Primary source : index is valid as-is since we kept its caches unchanged.
+                            byte[] newPayload = writeVarIntToBytes(ref.cacheIndex());
                             mainWriter.writeLiveAction(cacheRefOrdinal, newPayload);
+                        } else if (cur.head().action() instanceof Action.CacheChunkRef) {
+                            // Secondary source — drop
+                            ctx.report.stats.passthroughPackets.merge("CacheChunkRef(dropped-secondary)", 1, Integer::sum);
                         }
                     }
                 }
