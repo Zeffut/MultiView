@@ -1,8 +1,11 @@
 package fr.zeffut.multiview.merge;
 
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
 import fr.zeffut.multiview.format.Action;
 import fr.zeffut.multiview.format.ActionType;
 import fr.zeffut.multiview.format.FlashbackByteBuf;
+import fr.zeffut.multiview.format.FlashbackMetadata;
 import fr.zeffut.multiview.format.FlashbackReader;
 import fr.zeffut.multiview.format.FlashbackReplay;
 import fr.zeffut.multiview.format.PacketEntry;
@@ -14,12 +17,15 @@ import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 
 import java.io.IOException;
+import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.UUID;
@@ -48,96 +54,206 @@ public final class MergeOrchestrator {
             throws IOException {
         MergeReport report = new MergeReport();
 
-        // 1. Open sources
-        progress.accept("Ouverture des sources...");
-        List<FlashbackReplay> replays = new ArrayList<>();
-        for (Path src : options.sources()) {
-            replays.add(FlashbackReader.open(src));
-        }
+        // destTmp declared before try so the catch block can clean it up
+        Path destTmp = null;
 
-        // 2. Find anchors + align
-        progress.accept("Alignement temporel...");
-        PacketIdProvider idProvider = PacketIdProvider.minecraftRuntime();
-        List<TimelineAligner.Source> alignSources = new ArrayList<>();
-        for (int i = 0; i < replays.size(); i++) {
-            FlashbackReplay r = replays.get(i);
-            Optional<TimelineAligner.SetTimeAnchor> anchor;
-            try {
-                anchor = TimelineAligner.findSetTimeAnchor(r, idProvider);
-            } catch (Throwable t) {
-                anchor = Optional.empty();
-                report.warn("Source " + r.folder().getFileName()
-                        + " : SetTime detection failed (" + t.getClass().getSimpleName()
-                        + "), fallback metadata.name");
+        try {
+            // Check destination before opening sources
+            Path destFinal = options.destination();
+            if (Files.exists(destFinal)) {
+                if (options.force()) {
+                    deleteRecursively(destFinal);
+                } else {
+                    throw new IOException("Destination already exists: " + destFinal
+                            + ". Use --force (not yet exposed via CLI).");
+                }
             }
-            alignSources.add(new TimelineAligner.Source(
-                    r.folder().getFileName().toString(),
-                    anchor,
-                    r.metadata().name(),
-                    r.metadata().totalTicks()));
-        }
-        TimelineAligner.AlignmentResult alignment = TimelineAligner.alignAll(
-                alignSources, options.tickOverrides());
-        report.alignmentStrategy = alignment.strategy();
 
-        for (int i = 0; i < replays.size(); i++) {
-            MergeReport.SourceInfo si = new MergeReport.SourceInfo();
-            si.folder = replays.get(i).folder().getFileName().toString();
-            si.uuid = replays.get(i).metadata().uuid();
-            si.totalTicks = replays.get(i).metadata().totalTicks();
-            si.tickOffset = alignment.tickOffsets()[i];
-            report.sources.add(si);
-        }
-        report.mergedTotalTicks = alignment.mergedTotalTicks();
-
-        // 3. Primary source (largest totalTicks)
-        int primaryIdx = 0;
-        int primaryLen = replays.get(0).metadata().totalTicks();
-        for (int i = 1; i < replays.size(); i++) {
-            if (replays.get(i).metadata().totalTicks() > primaryLen) {
-                primaryIdx = i;
-                primaryLen = replays.get(i).metadata().totalTicks();
+            // 1. Open sources
+            progress.accept("Ouverture des sources...");
+            List<FlashbackReplay> replays = new ArrayList<>();
+            for (Path src : options.sources()) {
+                replays.add(FlashbackReader.open(src));
             }
+
+            // 2. Find anchors + align
+            progress.accept("Alignement temporel...");
+            PacketIdProvider idProvider = PacketIdProvider.minecraftRuntime();
+            List<TimelineAligner.Source> alignSources = new ArrayList<>();
+            for (int i = 0; i < replays.size(); i++) {
+                FlashbackReplay r = replays.get(i);
+                Optional<TimelineAligner.SetTimeAnchor> anchor;
+                try {
+                    anchor = TimelineAligner.findSetTimeAnchor(r, idProvider);
+                } catch (Throwable t) {
+                    anchor = Optional.empty();
+                    report.warn("Source " + r.folder().getFileName()
+                            + " : SetTime detection failed (" + t.getClass().getSimpleName()
+                            + "), fallback metadata.name");
+                }
+                alignSources.add(new TimelineAligner.Source(
+                        r.folder().getFileName().toString(),
+                        anchor,
+                        r.metadata().name(),
+                        r.metadata().totalTicks()));
+            }
+            TimelineAligner.AlignmentResult alignment = TimelineAligner.alignAll(
+                    alignSources, options.tickOverrides());
+            report.alignmentStrategy = alignment.strategy();
+
+            for (int i = 0; i < replays.size(); i++) {
+                MergeReport.SourceInfo si = new MergeReport.SourceInfo();
+                si.folder = replays.get(i).folder().getFileName().toString();
+                si.uuid = replays.get(i).metadata().uuid();
+                si.totalTicks = replays.get(i).metadata().totalTicks();
+                si.tickOffset = alignment.tickOffsets()[i];
+                report.sources.add(si);
+            }
+            report.mergedTotalTicks = alignment.mergedTotalTicks();
+
+            // 3. Primary source (largest totalTicks)
+            int primaryIdx = 0;
+            int primaryLen = replays.get(0).metadata().totalTicks();
+            for (int i = 1; i < replays.size(); i++) {
+                if (replays.get(i).metadata().totalTicks() > primaryLen) {
+                    primaryIdx = i;
+                    primaryLen = replays.get(i).metadata().totalTicks();
+                }
+            }
+
+            // 4. Build context + mergers
+            MergeContext ctx = new MergeContext(replays, alignment.tickOffsets(),
+                    alignment.mergedStartTick(), primaryIdx, report);
+            SourcePovTracker povTracker = new SourcePovTracker(replays.size());
+            IdRemapper idRemapper = new IdRemapper();
+            EntityMerger entityMerger = new EntityMerger(povTracker, idRemapper);
+            WorldStateMerger worldMerger = new WorldStateMerger();
+            GlobalDeduper globalDeduper = new GlobalDeduper();
+            CacheRemapper cacheRemapper = new CacheRemapper();
+            PacketClassifier classifier = new PacketClassifier(
+                    GamePacketDispatch.buildOrFallback(report));
+
+            // 5. Atomic staging
+            destTmp = destFinal.resolveSibling("." + destFinal.getFileName() + ".tmp");
+            Files.createDirectories(destTmp);
+
+            // 6. Concat caches
+            progress.accept("Remapping caches...");
+            List<Path> cacheDirs = new ArrayList<>();
+            for (FlashbackReplay r : replays) {
+                cacheDirs.add(r.folder().resolve("level_chunk_caches"));
+            }
+            cacheRemapper.concat(cacheDirs, destTmp.resolve("level_chunk_caches"));
+            report.stats.chunkCachesConcatenated = cacheRemapper.concatenatedCount();
+
+            // 7. Init EgoRouter — registry from primary source's first segment (Task 16)
+            List<String> egoRegistry = extractRegistryFromFirstSegment(replays.get(primaryIdx));
+            EgoRouter egoRouter = new EgoRouter(destTmp.resolve("ego"), egoRegistry);
+
+            // 8. Stream merge (Task 16)
+            progress.accept("Streaming merge...");
+            streamMerge(ctx, classifier, worldMerger, entityMerger, idRemapper,
+                    egoRouter, globalDeduper, cacheRemapper, povTracker, destTmp, progress);
+
+            // Step A: Write merged metadata.json
+            progress.accept("Écriture metadata.json...");
+            FlashbackMetadata primaryMeta = replays.get(primaryIdx).metadata();
+            FlashbackMetadata mergedMeta = buildMergedMetadata(
+                    primaryMeta, replays, alignment.mergedTotalTicks(),
+                    destFinal.getFileName().toString());
+            try (var w = Files.newBufferedWriter(destTmp.resolve("metadata.json"))) {
+                mergedMeta.toJson(w);
+            }
+
+            // Step B: Copy icon.png from primary source
+            Path iconSrc = replays.get(primaryIdx).folder().resolve("icon.png");
+            if (Files.exists(iconSrc)) {
+                Files.copy(iconSrc, destTmp.resolve("icon.png"));
+            }
+
+            // Step C: Write merge-report.json
+            try (var w = Files.newBufferedWriter(destTmp.resolve("merge-report.json"))) {
+                new GsonBuilder().setPrettyPrinting().create().toJson(report, w);
+            }
+
+            // Step D: Atomic rename .tmp/ → final
+            if (Files.exists(destFinal)) {
+                if (options.force()) {
+                    deleteRecursively(destFinal);
+                } else {
+                    throw new IOException("Destination already exists: " + destFinal
+                            + ". Pass --force to overwrite.");
+                }
+            }
+            Files.move(destTmp, destFinal);
+            destTmp = null; // successfully renamed — don't delete on catch
+
+            progress.accept("Merge terminé.");
+            return report;
+
+        } catch (IOException | RuntimeException e) {
+            report.error(e.getClass().getSimpleName() + ": " + e.getMessage());
+            if (destTmp != null && Files.exists(destTmp)) {
+                deleteRecursively(destTmp);
+            }
+            throw e;
         }
+    }
 
-        // 4. Build context + mergers
-        MergeContext ctx = new MergeContext(replays, alignment.tickOffsets(),
-                alignment.mergedStartTick(), primaryIdx, report);
-        SourcePovTracker povTracker = new SourcePovTracker(replays.size());
-        IdRemapper idRemapper = new IdRemapper();
-        EntityMerger entityMerger = new EntityMerger(povTracker, idRemapper);
-        WorldStateMerger worldMerger = new WorldStateMerger();
-        GlobalDeduper globalDeduper = new GlobalDeduper();
-        CacheRemapper cacheRemapper = new CacheRemapper();
-        PacketClassifier classifier = new PacketClassifier(
-                GamePacketDispatch.buildOrFallback(report));
+    /** Deletes a directory tree recursively, ignoring individual deletion errors. */
+    private static void deleteRecursively(Path path) throws IOException {
+        try (var stream = Files.walk(path)) {
+            stream.sorted(Comparator.reverseOrder())
+                    .forEach(p -> {
+                        try {
+                            Files.delete(p);
+                        } catch (IOException ignore) {}
+                    });
+        }
+    }
 
-        // 5. Atomic staging
-        Path destFinal = options.destination();
-        Path destTmp = destFinal.resolveSibling("." + destFinal.getFileName() + ".tmp");
-        Files.createDirectories(destTmp);
+    /**
+     * Builds a merged {@link FlashbackMetadata} by constructing a JSON object and
+     * deserializing it via {@link FlashbackMetadata#fromJson(java.io.Reader)}.
+     * <p>
+     * Fields sourced from primary replay metadata; chunks aggregated (union, last-write wins);
+     * markers and customNamespacesForRegistries start empty.
+     */
+    private static FlashbackMetadata buildMergedMetadata(
+            FlashbackMetadata primary,
+            List<FlashbackReplay> replays,
+            int mergedTotalTicks,
+            String destName) {
 
-        // 6. Concat caches
-        progress.accept("Remapping caches...");
-        List<Path> cacheDirs = new ArrayList<>();
+        // Aggregate chunks: union across all sources, overwriting on conflict
+        Map<String, Object> chunksMap = new LinkedHashMap<>();
         for (FlashbackReplay r : replays) {
-            cacheDirs.add(r.folder().resolve("level_chunk_caches"));
+            r.metadata().chunks().forEach((key, ci) -> {
+                Map<String, Object> ciMap = new LinkedHashMap<>();
+                ciMap.put("duration", ci.duration());
+                ciMap.put("forcePlaySnapshot", ci.forcePlaySnapshot());
+                chunksMap.put(key, ciMap);
+            });
         }
-        cacheRemapper.concat(cacheDirs, destTmp.resolve("level_chunk_caches"));
-        report.stats.chunkCachesConcatenated = cacheRemapper.concatenatedCount();
 
-        // 7. Init EgoRouter — registry from primary source's first segment (Task 16)
-        List<String> egoRegistry = extractRegistryFromFirstSegment(replays.get(primaryIdx));
-        EgoRouter egoRouter = new EgoRouter(destTmp.resolve("ego"), egoRegistry);
+        // Build JSON representation using Gson's JsonObject to avoid reflection
+        com.google.gson.Gson gson = new com.google.gson.GsonBuilder()
+                .setPrettyPrinting().disableHtmlEscaping().create();
 
-        // 8. Stream merge (Task 16)
-        progress.accept("Streaming merge...");
-        streamMerge(ctx, classifier, worldMerger, entityMerger, idRemapper,
-                egoRouter, globalDeduper, cacheRemapper, povTracker, destTmp, progress);
+        JsonObject obj = new JsonObject();
+        obj.addProperty("uuid", UUID.randomUUID().toString());
+        obj.addProperty("name", destName);
+        obj.addProperty("version_string", primary.versionString());
+        obj.addProperty("world_name", primary.worldName());
+        obj.addProperty("data_version", primary.dataVersion());
+        obj.addProperty("protocol_version", primary.protocolVersion());
+        obj.addProperty("bobby_world_name", primary.bobbyWorldName());
+        obj.addProperty("total_ticks", mergedTotalTicks);
+        obj.add("markers", new JsonObject());       // empty — Phase 4 can aggregate
+        obj.add("chunks", gson.toJsonTree(chunksMap));
 
-        // 9. TODO Task 17: finalize metadata + atomic rename
-        progress.accept("Merge terminé.");
-        return report;
+        String json = gson.toJson(obj);
+        return FlashbackMetadata.fromJson(new StringReader(json));
     }
 
     private static void streamMerge(MergeContext ctx, PacketClassifier classifier,
