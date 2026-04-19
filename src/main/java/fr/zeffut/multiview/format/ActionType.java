@@ -1,5 +1,6 @@
 package fr.zeffut.multiview.format;
 
+import io.netty.buffer.Unpooled;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -48,5 +49,43 @@ public final class ActionType {
 
     public static boolean isKnown(String id) {
         return CODECS.containsKey(id);
+    }
+
+    /** Inverse de decode : retourne l'id namespaced pour un Action typé. */
+    public static String idOf(Action action) {
+        return switch (action) {
+            case Action.NextTick nt           -> NEXT_TICK;
+            case Action.ConfigurationPacket c -> CONFIGURATION;
+            case Action.GamePacket g          -> GAME_PACKET;
+            case Action.CreatePlayer p        -> CREATE_PLAYER;
+            case Action.MoveEntities m        -> MOVE_ENTITIES;
+            case Action.CacheChunkRef r       -> CACHE_CHUNK;
+            case Action.VoiceChat v           -> VOICE_CHAT;
+            case Action.EncodedVoiceChat e    -> ENCODED_VOICE_CHAT;
+            case Action.Unknown u             -> u.id();
+        };
+    }
+
+    /** Inverse de decode : encode l'Action en bytes pour écriture en segment. */
+    public static byte[] encode(Action action) {
+        return switch (action) {
+            case Action.NextTick nt           -> new byte[0];
+            case Action.ConfigurationPacket c -> c.bytes();
+            case Action.GamePacket g          -> g.bytes();
+            case Action.CreatePlayer p        -> p.bytes();
+            case Action.MoveEntities m        -> m.bytes();
+            case Action.CacheChunkRef r       -> encodeCacheChunkRef(r);
+            case Action.VoiceChat v           -> v.bytes();
+            case Action.EncodedVoiceChat e    -> e.bytes();
+            case Action.Unknown u             -> u.payload();
+        };
+    }
+
+    private static byte[] encodeCacheChunkRef(Action.CacheChunkRef r) {
+        io.netty.buffer.ByteBuf tmp = Unpooled.buffer();
+        VarInts.writeVarInt(tmp, r.cacheIndex());
+        byte[] out = new byte[tmp.readableBytes()];
+        tmp.readBytes(out);
+        return out;
     }
 }
