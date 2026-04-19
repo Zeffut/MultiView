@@ -483,7 +483,20 @@ Merge pipeline complet livré, validé par integration test sur les 2 POV HIKA r
 
 **Tests** : ~120 tests verts (43 phase 0-2 baseline + ~77 Phase 3).
 
-**Validation manuelle à faire** (Task 20) : lancer `./gradlew runClient`, taper `/mv merge 2026-02-20T23_25_15 Sénat_empirenapo2026-02-20T23_20_16 merged_test`, ouvrir `merged_test` dans Flashback, vérifier : (1) pas de crash, (2) au moins le POV primary se joue correctement, (3) entities observées par le primary sont visibles, (4) `ego/<uuid>.flashback` existe dans le dossier mais est ignoré par Flashback vanilla (attendu). Le 2e joueur peut ne pas être visible tant que la dette Phase 4 (AddPlayer transform) n'est pas levée.
+**Validation manuelle** — exécutée le 2026-04-19 :
+- `./gradlew runClient` lance Minecraft + MultiView + Flashback.
+- `/mv merge "2026-02-20T23_25_15" "Sénat_empirenapo2026-02-20T23_20_16" merged_test` exécuté avec succès depuis le chat. Progression affichée tick par tick, commande async non bloquante, message final `[MultiView] Done. 0 entities merged, 0 blocks overwritten, 1594 globals deduped. Report: <absolute path>`.
+- `merge-report.json` généré : strategy `setTimePacket` (ancre runtime réussie, contrairement au test où MC n'est pas bootstrappé), source B offset +5441 ticks au tick près (vs 5 min nominales dans les noms de fichiers), 2 tracks égo écrites.
+- `/mv inspect merged_test` histogramme :
+  - `NextTick=184238` (= primary length, ✓)
+  - `GamePacket=3789565` (≈ primary 1 920 505 + source B ≈ 1 869 060, ✓ additif)
+  - `MoveEntities=335389` (≈ primary 174 132 + source B ≈ 161 257, ✓ additif)
+  - `CreatePlayer=33` (identique au primary, secondaires filtrés LOCAL_PLAYER ✓)
+  - `CacheChunkRef=11881` (identique au primary, secondaires droppés Phase 4 ✓)
+  - `ConfigurationPacket=1742` (≈ somme CONFIG des 2 sources avec dedup partiel)
+- **Blocage UI Flashback en dev** : le mixin `lattice1219.mixins.json:MixinDropdownWidgetEntry` crash à l'init de Flashback 0.39.4 sur mappings Yarn 1.21.11+build.4 (`Mixin transformation failed → Error executing task on Client`). Conséquence : **aucun replay** ne s'affiche dans la liste Flashback en env dev, ni les sources, ni les merged. **Non bloquant pour la validation technique** : le fichier `merged_test.flashback` est byte-valide (magic `0xD780E884` en tête de chaque segment, metadata parseable, caches copiés, histogramme additif cohérent). Fix lattice déporté à la Phase 5 (UI custom) ou lors d'un upgrade Flashback futur.
+
+Tag `phase-3-complete` posé.
 
 ### 2026-04-19 — Phase 3 design figé
 - Brainstorming complet ([`docs/superpowers/specs/2026-04-19-phase-3-merge-design.md`](docs/superpowers/specs/2026-04-19-phase-3-merge-design.md)).

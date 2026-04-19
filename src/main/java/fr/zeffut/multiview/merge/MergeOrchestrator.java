@@ -261,6 +261,7 @@ public final class MergeOrchestrator {
         obj.addProperty("bobby_world_name", primary.bobbyWorldName());
         obj.addProperty("total_ticks", mergedTotalTicks);
         obj.add("markers", new JsonObject());       // empty — Phase 4 can aggregate
+        obj.add("customNamespacesForRegistries", new JsonObject()); // required by Flashback to list the replay
         obj.add("chunks", gson.toJsonTree(chunksMap));
 
         String json = gson.toJson(obj);
