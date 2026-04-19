@@ -7,6 +7,8 @@ import fr.zeffut.multiview.format.PacketEntry;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -73,6 +75,57 @@ public final class TimelineAligner {
             if ((payload[i] & 0x80) == 0) return i + 1;
         }
         return 5;
+    }
+
+    public record Source(String label, Optional<SetTimeAnchor> anchor, String metadataName, int totalTicks) {}
+
+    public record AlignmentResult(int[] tickOffsets, int mergedStartTick, int mergedTotalTicks, String strategy) {}
+
+    public static AlignmentResult alignAll(List<Source> sources, Map<String, Integer> cliOverrides) {
+        int n = sources.size();
+        long[] absoluteOffsets = new long[n];
+        String strategy;
+
+        boolean allHaveAnchors = sources.stream().allMatch(s -> s.anchor().isPresent());
+        if (allHaveAnchors) {
+            for (int i = 0; i < n; i++) {
+                SetTimeAnchor a = sources.get(i).anchor().get();
+                absoluteOffsets[i] = a.gameTime() - a.tickLocal();
+            }
+            strategy = "setTimePacket";
+        } else {
+            for (int i = 0; i < n; i++) {
+                long ticks = parseMetadataNameToTicks(sources.get(i).metadataName());
+                if (ticks < 0) {
+                    throw new IllegalArgumentException(
+                            "Source '" + sources.get(i).label() + "' : pas de SetTime ET metadata.name non parseable. "
+                          + "Fournir --offset-" + sources.get(i).label() + "=<N>");
+                }
+                absoluteOffsets[i] = ticks;
+            }
+            strategy = "metadataName";
+        }
+
+        // Overrides CLI appliqués au-dessus
+        for (int i = 0; i < n; i++) {
+            Integer over = cliOverrides.get(sources.get(i).label());
+            if (over != null) {
+                absoluteOffsets[i] += over;
+                strategy = "cliOverride";
+            }
+        }
+
+        // Normalisation : le plus petit devient 0
+        long min = Long.MAX_VALUE;
+        for (long o : absoluteOffsets) min = Math.min(min, o);
+        int[] tickOffsets = new int[n];
+        long max = 0;
+        for (int i = 0; i < n; i++) {
+            tickOffsets[i] = (int) (absoluteOffsets[i] - min);
+            long end = tickOffsets[i] + sources.get(i).totalTicks();
+            if (end > max) max = end;
+        }
+        return new AlignmentResult(tickOffsets, 0, (int) max, strategy);
     }
 
     public static long parseMetadataNameToTicks(String name) {

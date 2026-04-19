@@ -3,6 +3,9 @@ package fr.zeffut.multiview.merge;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 class TimelineAlignerTest {
 
@@ -80,5 +83,80 @@ class TimelineAlignerTest {
     void varIntLengthReturnsCorrectByteCount() {
         assertEquals(1, TimelineAligner.varIntLength(new byte[]{42}));
         assertEquals(2, TimelineAligner.varIntLength(new byte[]{(byte) 0xAC, 0x02}));
+    }
+
+    @Test
+    void cascadePrefersSetTimeAnchor() {
+        var aligned = TimelineAligner.alignAll(
+                List.of(
+                        new TimelineAligner.Source("A", Optional.of(new TimelineAligner.SetTimeAnchor(10, 1000)), "2026-01-01T00:00:00", 100),
+                        new TimelineAligner.Source("B", Optional.of(new TimelineAligner.SetTimeAnchor(5, 1050)), "2026-01-01T00:00:00", 100)
+                ),
+                Map.of());
+        // A: abs=1000-10=990, B: abs=1050-5=1045. Normalize: A=0, B=55.
+        assertEquals(0, aligned.tickOffsets()[0]);
+        assertEquals(55, aligned.tickOffsets()[1]);
+        assertEquals("setTimePacket", aligned.strategy());
+    }
+
+    @Test
+    void cascadeFallsBackToMetadataWhenSetTimeMissing() {
+        var aligned = TimelineAligner.alignAll(
+                List.of(
+                        new TimelineAligner.Source("A", Optional.empty(), "2026-01-01T00:00:00", 100),
+                        new TimelineAligner.Source("B", Optional.empty(), "2026-01-01T00:00:05", 100)
+                ),
+                Map.of());
+        // A commence à t=0s, B commence à t=5s → B offset = A + 5*20 = 100 ticks après
+        assertEquals(100, aligned.tickOffsets()[1] - aligned.tickOffsets()[0]);
+        assertEquals("metadataName", aligned.strategy());
+    }
+
+    @Test
+    void cliOverrideIsApplied() {
+        var aligned = TimelineAligner.alignAll(
+                List.of(
+                        new TimelineAligner.Source("A", Optional.empty(), "2026-01-01T00:00:00", 100),
+                        new TimelineAligner.Source("B", Optional.empty(), "2026-01-01T00:00:00", 100)
+                ),
+                Map.of("B", 50));
+        assertEquals(50, aligned.tickOffsets()[1] - aligned.tickOffsets()[0]);
+        assertEquals("cliOverride", aligned.strategy());
+    }
+
+    @Test
+    void normalizationStartsAtZero() {
+        var aligned = TimelineAligner.alignAll(
+                List.of(
+                        new TimelineAligner.Source("A", Optional.of(new TimelineAligner.SetTimeAnchor(0, 1000)), "", 100),
+                        new TimelineAligner.Source("B", Optional.of(new TimelineAligner.SetTimeAnchor(0, 2000)), "", 100)
+                ),
+                Map.of());
+        int min = Math.min(aligned.tickOffsets()[0], aligned.tickOffsets()[1]);
+        assertEquals(0, min);
+    }
+
+    @Test
+    void mergedTotalTicksAccountsForOffsets() {
+        var aligned = TimelineAligner.alignAll(
+                List.of(
+                        new TimelineAligner.Source("A", Optional.of(new TimelineAligner.SetTimeAnchor(0, 100)), "", 500),
+                        new TimelineAligner.Source("B", Optional.of(new TimelineAligner.SetTimeAnchor(0, 200)), "", 300)
+                ),
+                Map.of());
+        // A: offset 0, total 500 → end 500
+        // B: offset 100, total 300 → end 400
+        // mergedTotalTicks = max(500, 400) = 500
+        assertEquals(500, aligned.mergedTotalTicks());
+    }
+
+    @Test
+    void alignAllThrowsWhenMetadataNameUnparseable() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TimelineAligner.alignAll(
+                        List.of(
+                                new TimelineAligner.Source("A", Optional.empty(), "no-timestamp-here", 100)
+                        ),
+                        Map.of()));
     }
 }
