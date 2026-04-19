@@ -7,6 +7,10 @@ import java.util.Map;
  * Bijection (sourceIdx, localEntityId) → globalEntityId.
  * Les globalIds commencent à 100_000_000 pour éviter toute collision avec
  * des localIds qui traîneraient dans des payloads non remappés.
+ *
+ * @implNote Non thread-safe. Le pipeline de merge (MergeOrchestrator) tourne
+ *           sur un seul thread par design (streaming k-way merge, voir spec §2.1).
+ *           Ne pas partager entre threads sans synchronisation externe.
  */
 public final class IdRemapper {
 

@@ -9,6 +9,10 @@ import java.util.zip.CRC32C;
  * Déduplication des packets globaux par (packetTypeId, tickAbs, contentHash).
  * Utilisé pour éviter d'émettre 2× le même packet GLOBAL (ex. ClientboundSetTimePacket)
  * observé par plusieurs sources au même tick.
+ *
+ * @implNote Non thread-safe. Le pipeline de merge (MergeOrchestrator) tourne
+ *           sur un seul thread par design (streaming k-way merge, voir spec §2.1).
+ *           Ne pas partager entre threads sans synchronisation externe.
  */
 public final class GlobalDeduper {
 
