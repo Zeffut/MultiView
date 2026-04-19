@@ -1,6 +1,7 @@
 package fr.zeffut.multiview.format;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.annotations.SerializedName;
 
 import java.io.Reader;
@@ -22,6 +23,14 @@ public final class FlashbackMetadata {
 
     public static FlashbackMetadata fromJson(Reader reader) {
         return new Gson().fromJson(reader, FlashbackMetadata.class);
+    }
+
+    public void toJson(java.io.Writer writer) {
+        new GsonBuilder()
+                .setPrettyPrinting()
+                .disableHtmlEscaping()
+                .create()
+                .toJson(this, writer);
     }
 
     public String uuid() { return uuid; }

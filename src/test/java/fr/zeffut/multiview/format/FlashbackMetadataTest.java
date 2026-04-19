@@ -81,4 +81,47 @@ class FlashbackMetadataTest {
         int sum = meta.chunks().values().stream().mapToInt(FlashbackMetadata.ChunkInfo::duration).sum();
         assertEquals(meta.totalTicks(), sum);
     }
+
+    @Test
+    void roundTripPreservesAllFields() {
+        String json = """
+                {
+                  "uuid": "2b5459d2-d7ad-43dc-ae36-e6922cf1a45f",
+                  "name": "test replay",
+                  "version_string": "1.21.11",
+                  "world_name": "TestWorld",
+                  "data_version": 4671,
+                  "protocol_version": 774,
+                  "bobby_world_name": "test.server",
+                  "total_ticks": 6052,
+                  "markers": {
+                    "42": { "colour": 11141290, "description": "Changed Dimension" }
+                  },
+                  "customNamespacesForRegistries": {},
+                  "chunks": {
+                    "c0.flashback": { "duration": 6000, "forcePlaySnapshot": false },
+                    "c1.flashback": { "duration": 52, "forcePlaySnapshot": false }
+                  }
+                }
+                """;
+        FlashbackMetadata original = FlashbackMetadata.fromJson(new java.io.StringReader(json));
+
+        java.io.StringWriter out = new java.io.StringWriter();
+        original.toJson(out);
+        String reserialized = out.toString();
+
+        FlashbackMetadata parsedAgain = FlashbackMetadata.fromJson(new java.io.StringReader(reserialized));
+
+        assertEquals(original.uuid(), parsedAgain.uuid());
+        assertEquals(original.name(), parsedAgain.name());
+        assertEquals(original.versionString(), parsedAgain.versionString());
+        assertEquals(original.worldName(), parsedAgain.worldName());
+        assertEquals(original.dataVersion(), parsedAgain.dataVersion());
+        assertEquals(original.protocolVersion(), parsedAgain.protocolVersion());
+        assertEquals(original.totalTicks(), parsedAgain.totalTicks());
+        assertEquals(original.markers().size(), parsedAgain.markers().size());
+        assertEquals(original.markers().get(42).description(), parsedAgain.markers().get(42).description());
+        assertEquals(original.chunks().size(), parsedAgain.chunks().size());
+        assertEquals(original.chunks().get("c0.flashback").duration(), parsedAgain.chunks().get("c0.flashback").duration());
+    }
 }
