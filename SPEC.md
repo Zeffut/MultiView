@@ -384,6 +384,17 @@ Ces questions nécessitent d'avoir avancé un peu dans le reverse-engineering av
 - Warning observé (non bloquant) : `lattice1219.mixins.json:MixinDropdownWidgetEntry.render` échoue au APPLY — mixin de la lib `lattice` bundlée dans Flashback 0.39.4, probable incompat mineure avec mappings 1.21.11+build.4. N'affecte pas le core replay, à surveiller en Phase 5.
 - Flashback jar placé manuellement dans `libs/` et `run/mods/` — tous deux gitignorés.
 
+### 2026-04-19 — Phase 1 terminée : lecteur du format .flashback
+- Format `.flashback` documenté dans `src/main/java/fr/zeffut/multiview/format/README.md` (spec §2–§9), reverse-engineered via **Arcade** (CasualChampionships/Arcade, MIT). Aucune ligne Moulberry consultée.
+- Structure clé : chaque segment = magic `0xD780E884` + registry VarInt de N namespaced ids + snapshot bounded par int32 BE + live stream jusqu'à EOF. Actions = VarInt ordinal + int32 BE payloadSize + payload.
+- `FlashbackMetadata` (Gson), `FlashbackReader.open(Path)`, `FlashbackReader.stream(replay) -> Stream<PacketEntry>`.
+- Sealed `Action` à 9 variantes (NextTick + 7 opaques + Unknown), registry `ActionType` avec 8 ids connus.
+- Commande dev `/mv inspect <replayName>` affiche metadata + histogramme d'actions dans le chat.
+- 25 tests JUnit verts (unitaires + intégration conditionnelle).
+- Validation bout-en-bout : 3,7 M actions décodées sur un POV de 2h30 (HIKA Civ), `max tick seen == metadata.total_ticks`, aucun `Unknown`.
+- Test d'intégration `FlashbackReaderIntegrationTest` skippé en CI (pas de replay), actif en local.
+- Ajout dep `fabric-command-api-v2` dans build.gradle pour la commande.
+
 ---
 
 **Fin du document. Version : 0.1 (initial spec).**

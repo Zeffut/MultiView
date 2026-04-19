@@ -222,3 +222,27 @@ outside this loop and is driven by `NextTick` / `CacheChunk` callbacks.
 - `arcade-replay/src/main/kotlin/net/casual/arcade/replay/util/flashback/FlashbackAction.kt`
 
 All at CasualChampionships/Arcade @ `1.21.11`, MIT License.
+
+## 9. Validation
+
+The reader was validated against two real `.flashback` POVs recorded on
+"HIKA CIVILIZATION" (MC 1.21.11, Flashback 0.39.4) during a multi-player role-play
+session:
+
+| Replay | Segments | Total ticks (metadata) | Actions decoded | Unknown ids |
+|---|---|---|---|---|
+| `2026-02-20T23_25_15` | 33 | 184 238 | 3 697 774 | 0 |
+| `Sénat_empirenapo2026-02-20T23_20_16` | 34 | 170 068 | ≈ 3.5 M | 0 |
+
+Key invariants verified:
+- `sum(chunks[i].duration) == total_ticks` — no drift over 2h30 of timeline.
+- Every `NextTick` ordinal boundary aligns with tick count bumps in the live
+  stream; snapshot NextTicks do NOT advance the replay clock (documented
+  behaviour: snapshots rebuild state at segment start without re-advancing).
+- All 8 action ids registered by Arcade were present; no `Unknown` emitted on
+  Flashback-native files.
+
+The test `FlashbackReaderIntegrationTest.openAllAvailableReplays()` iterates
+any replay folder under `run/replay/` and enforces `sum == total_ticks` plus
+"at least one entry decoded", so future regressions are caught locally on
+every `./gradlew test`.
