@@ -101,7 +101,7 @@ Nom de travail : **`flashback-merger`** (à ajuster avant publication).
      - Même type d'entité
      - Positions observées cohérentes (distance < seuil, ex. 2 blocs) aux mêmes timestamps ou proche
      - Si deux entités observées sont candidates au matching → on fusionne leurs timelines
-  3. En cas d'ambiguïté non résolue → on garde les deux (doublon plutôt que perte d'info)
+  3. En cas d'ambiguïté non résolue → **fusion forcée par confiance géographique** : l'observation dont le POV enregistreur est le plus proche de l'entité au tick considéré est retenue, les autres candidates sont fusionnées dessus. Warning loggé dans `MergeReport`. *(Décision Phase 3 : priorité à la cohérence visuelle vs zéro-perte stricte — un doublon visible est plus gênant qu'une info d'observation auxiliaire perdue.)*
 - **Registre** : `Map<EntityIdentifier, MergedEntityTimeline>`
 - **Génération** : produire de nouveaux entity IDs globaux pour le replay fusionné, remapper tous les packets entrants
 
@@ -142,13 +142,17 @@ flashback-merger/
 │   │   ├── FlashbackMetadata.java
 │   │   ├── PacketEntry.java              # un packet + timestamp + métadonnées
 │   │   └── README.md                     # doc du format reverse-engineered
-│   ├── merge/                            # Logique de fusion
+│   ├── merge/                            # Logique de fusion (Phase 3)
 │   │   ├── MergeOrchestrator.java        # entry point du merge
-│   │   ├── TimelineAligner.java          # synchro temporelle
-│   │   ├── WorldStateMerger.java         # blocs, chunks
-│   │   ├── EntityMerger.java             # déduplication + timeline fusion
-│   │   ├── PacketClassifier.java         # égocentrique vs global vs monde
-│   │   ├── IdRemapper.java               # remapping entity/player IDs
+│   │   ├── TimelineAligner.java          # synchro temporelle (cascade SetTime/metadata/override)
+│   │   ├── PacketClassifier.java         # WORLD / ENTITY / EGO / GLOBAL / CACHE_REF / LOCAL_PLAYER / PASSTHROUGH
+│   │   ├── SourcePovTracker.java         # position du POV enregistreur par tick (entrée de la confiance géographique)
+│   │   ├── WorldStateMerger.java         # LWW sur blocs, par dimension
+│   │   ├── EntityMerger.java             # dedup UUID + heuristique + confiance géographique
+│   │   ├── IdRemapper.java               # bijection (sourceIdx, localId) → globalId
+│   │   ├── EgoRouter.java                # dispatch vers ego/<uuid>.flashback
+│   │   ├── GlobalDeduper.java            # dedup packets globaux par (type, tick, hash)
+│   │   ├── CacheRemapper.java            # concat + remap des level_chunk_caches
 │   │   └── MergeReport.java              # stats, warnings, logs
 │   ├── ui/                               # Intégration UI dans Flashback
 │   │   ├── ReplayListScreenMixin.java    # ajout multi-select + bouton "Merge"
@@ -256,16 +260,31 @@ Un merge peut durer plusieurs minutes pour de gros replays. Prévoir :
 - [ ] Ouvrir le fichier `Y` dans Flashback → doit se comporter comme l'original
 - [ ] Si ça marche pas → retourner en Phase 1, le format est mal compris
 
-### Phase 3 — Merge de 2 replays triviaux (5-7 jours)
-- [ ] Enregistrer 2 replays de 30s dans la **même session** (2 comptes, 2 instances Minecraft, monde local ou petit serveur test) avec zones qui se chevauchent
-- [ ] Implémenter `TimelineAligner` + `PacketClassifier` (version minimale)
-- [ ] Implémenter `WorldStateMerger` et `EntityMerger` (règles de la section 3)
-- [ ] Implémenter `IdRemapper`
-- [ ] Implémenter `MergeOrchestrator` en ligne de commande (pas d'UI encore) : `java -jar ... merge replay_A.flashback replay_B.flashback -o merged.flashback`
-- [ ] **Test d'acceptation** : ouvrir merged.flashback dans Flashback, vérifier que :
+### Phase 3 — Merge zéro-perte au format (5-7 jours)
+Le fichier de sortie contient 100% de l'information des sources. Le playback du contenu égocentrique est **hors scope** (Phase 3.5). Design détaillé : [`docs/superpowers/specs/2026-04-19-phase-3-merge-design.md`](docs/superpowers/specs/2026-04-19-phase-3-merge-design.md).
+- [ ] Utiliser les 2 POV HIKA existants dans `run/replay/` (même serveur, même event présumé)
+- [ ] Implémenter `TimelineAligner` (cascade : `ClientboundSetTimePacket` → `metadata.name` → override CLI)
+- [ ] Implémenter `PacketClassifier` (dispatch par type d'Action + par packet ID pour les `GamePacket`)
+- [ ] Implémenter `WorldStateMerger` (LWW sur `(dimensionId, x, y, z)`)
+- [ ] Implémenter `EntityMerger` (dedup UUID + heuristique ±5 ticks / ≤ 2 blocs + ambiguïté = confiance géographique)
+- [ ] Implémenter `IdRemapper` (bijection `(sourceIdx, localId)` → `globalId`)
+- [ ] Implémenter `EgoRouter` (un `SegmentWriter` par joueur dans `ego/<uuid>.flashback`)
+- [ ] Implémenter `GlobalDeduper` (`HashSet<(typeId, tick, hash)>` avec fenêtre glissante)
+- [ ] Implémenter `CacheRemapper` (concat `level_chunk_caches/` + remap des `CacheChunkRef`)
+- [ ] Implémenter `MergeOrchestrator` via commande client `/mv merge <A> <B> [<C>...] -o <name>` (temporaire, retiré Phase 5)
+- [ ] Générer `MergeReport` (`merge-report.json` + résumé chat)
+- [ ] Architecture streaming k-way merge — support N replays natif, validation sur 2
+- [ ] **Test d'acceptation** : ouvrir le `merged.flashback` produit par `/mv merge` sur les 2 POV HIKA dans Flashback, vérifier :
   - Les deux joueurs sont visibles et bougent comme prévu
   - Les chunks des deux zones sont chargés
   - Pas de crash, pas d'incohérence visuelle majeure
+  - `ego/<uuid>.flashback` présents dans le ZIP (ignorés par Flashback vanilla, consommés en Phase 3.5)
+
+### Phase 3.5 — Mixin playback des tracks égocentriques (3-5 jours)
+- [ ] Reverse du playback Flashback : identifier où le mod consomme les packets égo à la lecture
+- [ ] Mixin(s) pour intercepter la lecture du replay et, lors du spectate du joueur `<uuid>`, rejouer les packets de `ego/<uuid>.flashback` (santé, XP, inventaire, action bar, chat privé)
+- [ ] Test d'acceptation : spectate de chaque POV montre son HUD d'origine (inventaire et santé reconstruits)
+- [ ] Fallback si le Mixin s'avère trop fragile : le fichier reste exploitable (les tracks sont dans le ZIP)
 
 ### Phase 4 — Merge de N replays complexes (3-5 jours)
 - [ ] Test avec 4-5 replays simultanés
@@ -413,6 +432,18 @@ Ces questions nécessitent d'avoir avancé un peu dans le reverse-engineering av
   writer préserve l'intégralité de l'information.
 - 43 tests verts au total. CI toujours green (tests d'intégration conditionnels).
 
+### 2026-04-19 — Phase 3 design figé
+- Brainstorming complet ([`docs/superpowers/specs/2026-04-19-phase-3-merge-design.md`](docs/superpowers/specs/2026-04-19-phase-3-merge-design.md)).
+- **Décisions clés** :
+  - **Découpage** : Phase 3 (merge zéro-perte au format) + nouvelle Phase 3.5 (Mixin playback des tracks égo). Le fichier Phase 3 contient déjà 100% de l'info.
+  - **Alignement temporel en cascade** : `ClientboundSetTimePacket` (tick exact) → fallback `metadata.name` parsé (±20 ticks) → override CLI `--offset-<label>`.
+  - **Dedup entités** : UUID primary, heuristique ±5 ticks / ≤ 2 blocs. Ambiguïté = **fusion forcée par confiance géographique** (contredit SPEC §3.3.2 initial, mis à jour en conséquence).
+  - **Streaming k-way merge** : pas de chargement global en RAM. Support N sources natif.
+  - **Local player** : POV le plus long. Autres POV transformés en `AddPlayer`.
+  - **Tracks égo** : `ego/<playerUUID>.flashback` dans le ZIP, format = segment standard, ignoré par Flashback vanilla.
+  - **Interface** : commande client `/mv merge <A> <B> [<C>...] -o <name>`, temporaire (retirée en Phase 5 au profit de l'UI Flashback).
+- Mise à jour §3.3.2 (politique ambiguïté), §4.1 (structure `merge/`), §5 Phase 3/3.5.
+
 ---
 
-**Fin du document. Version : 0.1 (initial spec).**
+**Fin du document. Version : 0.2 (Phase 3 design).**
