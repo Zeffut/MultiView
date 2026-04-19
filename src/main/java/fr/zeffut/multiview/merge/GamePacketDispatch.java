@@ -40,7 +40,7 @@ public final class GamePacketDispatch {
     public static IntFunction<Category> buildOrFallback(MergeReport report) {
         try {
             return build();
-        } catch (Exception e) {
+        } catch (Throwable e) {
             report.warn("GamePacketDispatch: introspection failed (" + e
                     + "), all GamePackets → PASSTHROUGH. Merge will be degraded.");
             return pid -> {
