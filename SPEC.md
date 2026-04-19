@@ -432,6 +432,59 @@ Ces questions nécessitent d'avoir avancé un peu dans le reverse-engineering av
   writer préserve l'intégralité de l'information.
 - 43 tests verts au total. CI toujours green (tests d'intégration conditionnels).
 
+### 2026-04-19 — Phase 3 terminée : pipeline de merge zéro-perte (MVP)
+
+Merge pipeline complet livré, validé par integration test sur les 2 POV HIKA réels (190 218 ticks mergés).
+
+**Livré** (13 composants + commande) :
+- `Category`, `MergeOptions`, `MergeReport`, `MergeContext` (scaffolding)
+- `IdRemapper` — bijection `(sourceIdx, localId) → globalId`
+- `SourcePovTracker` — position du POV enregistreur par tick
+- `GlobalDeduper` — dedup par `(packetTypeId, tickAbs, CRC32C(payload))` + purge glissante
+- `CacheRemapper` — présent mais non utilisé dans le pipeline Phase 3 (dette Phase 4, voir ci-dessous)
+- `WorldStateMerger` — LWW par `(dimensionId, x, y, z)` (impl prête, non appelée par streamMerge)
+- `EntityMerger` — dedup UUID + heuristique ±5 ticks / ≤ 2 blocs + confiance géographique (impl prête, non appelée par streamMerge)
+- `EgoRouter` — dispatch par joueur vers `ego/<uuid>.flashback`, streaming vers disque pour éviter OOM
+- `TimelineAligner` — cascade `ClientboundSetTimePacket → metadata.name → CLI override`
+- `PacketClassifier` — dispatch sur sealed `Action` + table `GamePacket` via introspection `PlayStateFactories.S2C`
+- `GamePacketDispatch` — ~30 mappings MC 1.21.11 (WORLD/ENTITY/EGO/GLOBAL), fallback PASSTHROUGH si MC non bootstrappé
+- `MergeOrchestrator` — setup + k-way merge streaming + metadata.json + merge-report.json + rollback atomique
+- Commande client `/mv merge <source1> <source2> <output>` (Brigadier, async executor)
+
+**Ce qui marche** :
+- Pipeline bout-en-bout sur 2 POV réels (190 218 ticks)
+- Alignement temporel via cascade (fallback metadata.name fonctionnel)
+- Tracks égo écrites par joueur dans `ego/<uuid>.flashback`
+- metadata.json + merge-report.json + icon.png + level_chunk_caches du primary
+- Rollback atomique en cas d'erreur (`.tmp/ → final` par rename)
+
+**Dette Phase 4 explicite** :
+- **WORLD LWW** : `WorldStateMerger` impl prête et testée mais pas appelée par `streamMerge` (WORLD category = passthrough). Ajouter décodage du `ClientboundBlockUpdatePacket` pour extraire `(BlockPos, blockState)`.
+- **ENTITY dedup** : `EntityMerger` impl prête et testée mais pas appelée par `streamMerge` (ENTITY category = passthrough). Ajouter décodage de `ClientboundAddEntityPacket` pour extraire `(UUID, type, pos, localId)`.
+- **LOCAL_PLAYER secondary** : `CreatePlayer` des sources non-primary est DROP. Phase 3.5 ou 4 doit le transformer en `AddPlayer` / `AddEntity` pour que les 2 joueurs soient visibles dans Flashback. Conséquence : pour l'instant, le 2e joueur n'est visible que s'il a été OBSERVÉ par le primary POV (via `AddEntity` qui est passthrough).
+- **CACHE_REF flat indexing** : `cacheIndex` est un index global flat (10 000 entrées par fichier), pas un numéro de fichier. MVP drop les CacheChunkRef des sources secondaires (perte de chunks = dette connue). `CacheRemapper` conservé en attendant une refonte flat-entry-aware.
+- **Egocentric playback** : les tracks `ego/<uuid>.flashback` sont écrites mais Flashback vanilla les ignore. Phase 3.5 = Mixin pour les rejouer au spectate.
+- **Main c0.flashback in-memory** : `SegmentWriter` accumule tous les packets en RAM avant flush. Sur gros replays (190k ticks) ça demande `-Xmx4G` (bumped dans build.gradle). Phase 4 = streaming.
+
+**Bugs découverts et corrigés en route** :
+- `EntityMerger` heuristique dédoublait les entités de la même source (contrainte manquante : `e.hasSource(sourceIdx) → skip`)
+- `EgoRouter` OOM sur gros replays (rewrite en streaming vers `FileOutputStream`)
+- `GamePacketDispatch.buildOrFallback` catch `Exception` manqué `NoClassDefFoundError` en tests → switch `Throwable`
+- `buildMergedMetadata` émettait la liste des segments sources au lieu du unique `c0.flashback` → FlashbackReader refusait d'ouvrir
+- Message de fin de `/mv merge` avec path hardcodé → résolution absolue via `dest.toAbsolutePath()`
+
+**Stats integration test** (2 POV HIKA, via `@EnabledIf("replaysAvailable")`) :
+- Strategy : `metadataName` (MC non bootstrappé en tests)
+- Merged total ticks : 190 218
+- Source A (23:25:15, 184 238 ticks) offset +5980 ; source B (23:20:16, 170 068 ticks) offset 0 ← cohérent avec delta nominal de 5 min
+- 2 ego tracks écrites
+- 26 594 CacheChunkRef de source B droppées (dette)
+- 0 dedup WORLD/ENTITY/GLOBAL (PASSTHROUGH car MC non bootstrappé en tests)
+
+**Tests** : ~120 tests verts (43 phase 0-2 baseline + ~77 Phase 3).
+
+**Validation manuelle à faire** (Task 20) : lancer `./gradlew runClient`, taper `/mv merge 2026-02-20T23_25_15 Sénat_empirenapo2026-02-20T23_20_16 merged_test`, ouvrir `merged_test` dans Flashback, vérifier : (1) pas de crash, (2) au moins le POV primary se joue correctement, (3) entities observées par le primary sont visibles, (4) `ego/<uuid>.flashback` existe dans le dossier mais est ignoré par Flashback vanilla (attendu). Le 2e joueur peut ne pas être visible tant que la dette Phase 4 (AddPlayer transform) n'est pas levée.
+
 ### 2026-04-19 — Phase 3 design figé
 - Brainstorming complet ([`docs/superpowers/specs/2026-04-19-phase-3-merge-design.md`](docs/superpowers/specs/2026-04-19-phase-3-merge-design.md)).
 - **Décisions clés** :
