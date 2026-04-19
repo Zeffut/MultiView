@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -101,5 +102,27 @@ class SegmentReaderTest {
         assertEquals("custom:mod/foo", u.id());
         assertEquals(1, u.payload().length);
         assertEquals(0x42, u.payload()[0]);
+    }
+
+    @Test
+    void nextRawYieldsUnDecodedPayload() {
+        ByteBuf buf = Unpooled.buffer();
+        buf.writeInt(0xD780E884);
+        VarInts.writeVarInt(buf, 1);
+        byte[] idBytes = ActionType.NEXT_TICK.getBytes(StandardCharsets.UTF_8);
+        VarInts.writeVarInt(buf, idBytes.length);
+        buf.writeBytes(idBytes);
+        buf.writeInt(0); // snapshot size 0
+        // 1 action live avec payload { 0xAA, 0xBB }
+        VarInts.writeVarInt(buf, 0);
+        buf.writeInt(2);
+        buf.writeByte(0xAA);
+        buf.writeByte(0xBB);
+
+        SegmentReader reader = new SegmentReader("test.flashback", new FlashbackByteBuf(buf));
+        assertTrue(reader.hasNext());
+        SegmentReader.RawAction raw = reader.nextRaw();
+        assertEquals(0, raw.ordinal());
+        assertArrayEquals(new byte[] { (byte) 0xAA, (byte) 0xBB }, raw.payload());
     }
 }

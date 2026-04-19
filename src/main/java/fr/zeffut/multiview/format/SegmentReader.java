@@ -96,4 +96,23 @@ public final class SegmentReader implements Iterator<Action> {
         String id = registry.get(ordinal);
         return ActionType.decode(id, payload);
     }
+
+    /** Entrée brute (ordinal + payload bytes) — alternative à next() pour round-trip. */
+    public record RawAction(int ordinal, byte[] payload) {}
+
+    /** Lit la prochaine action sans la décoder. Utile pour round-trip byte-for-byte. */
+    public RawAction nextRaw() {
+        if (!hasNext()) {
+            throw new NoSuchElementException();
+        }
+        int ordinal = buf.readVarInt();
+        if (ordinal < 0 || ordinal >= registry.size()) {
+            throw new IllegalStateException(
+                    "Action ordinal " + ordinal + " out of registry bounds ["
+                            + registry.size() + ") in " + segmentName);
+        }
+        int payloadSize = buf.readInt();
+        byte[] payload = payloadSize > 0 ? buf.readBytes(payloadSize) : new byte[0];
+        return new RawAction(ordinal, payload);
+    }
 }
