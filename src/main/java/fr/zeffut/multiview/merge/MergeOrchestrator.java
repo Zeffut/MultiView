@@ -167,138 +167,155 @@ public final class MergeOrchestrator {
                         ctx.toAbsTick(c.sourceIdx(), c.head().tick()))
                         .thenComparingInt(SourceCursor::sourceIdx));
 
-        for (int i = 0; i < ctx.sources.size(); i++) {
-            FlashbackReplay replay = ctx.sources.get(i);
-            Stream<PacketEntry> stream = FlashbackReader.stream(replay);
-            streams.add(stream);
-            Iterator<PacketEntry> it = stream.iterator();
-            if (it.hasNext()) {
-                pq.add(new SourceCursor(i, it, it.next()));
-            }
-        }
-
-        int tickAbsEmitted = 0;
-        long processed = 0;
-        int lastPurge = 0;
-
-        while (!pq.isEmpty()) {
-            SourceCursor cur = pq.poll();
-            int tickAbs = ctx.toAbsTick(cur.sourceIdx(), cur.head().tick());
-
-            // Intercalate NextTick actions up to tickAbs
-            while (tickAbsEmitted < tickAbs) {
-                tickAbsEmitted++;
-                if (nextTickOrdinal >= 0) {
-                    mainWriter.writeLiveAction(nextTickOrdinal, new byte[0]);
+        try {
+            for (int i = 0; i < ctx.sources.size(); i++) {
+                FlashbackReplay replay = ctx.sources.get(i);
+                Stream<PacketEntry> stream = FlashbackReader.stream(replay);
+                streams.add(stream);
+                Iterator<PacketEntry> it = stream.iterator();
+                if (it.hasNext()) {
+                    pq.add(new SourceCursor(i, it, it.next()));
                 }
             }
 
-            Category cat = classifier.classify(cur.head().action());
-            switch (cat) {
-                case TICK -> {
-                    // NextTick already intercalated above; nothing more to emit
+            int tickAbsEmitted = 0;
+            long processed = 0;
+            int lastPurge = 0;
+            boolean warnedOutOfOrder = false;
+
+            while (!pq.isEmpty()) {
+                SourceCursor cur = pq.poll();
+                int tickAbs = ctx.toAbsTick(cur.sourceIdx(), cur.head().tick());
+
+                // Check for out-of-order packets (clock desync between sources or bad offset)
+                if (tickAbs < tickAbsEmitted) {
+                    if (!warnedOutOfOrder) {
+                        ctx.report.warn(String.format(
+                                "Out-of-order packet at tick %d (already emitted tick %d) from source %d",
+                                tickAbs, tickAbsEmitted, cur.sourceIdx()));
+                        warnedOutOfOrder = true;
+                    }
+                    ctx.report.stats.outOfOrderPackets++;
                 }
-                case CONFIG -> {
-                    // Emit once across all sources — dedup by content hash (packetTypeId=-1)
-                    byte[] payload = ActionType.encode(cur.head().action());
-                    if (globalDeduper.shouldEmit(-1, tickAbs, payload)) {
-                        writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+
+                // Intercalate NextTick actions up to tickAbs
+                while (tickAbsEmitted < tickAbs) {
+                    tickAbsEmitted++;
+                    if (nextTickOrdinal >= 0) {
+                        mainWriter.writeLiveAction(nextTickOrdinal, new byte[0]);
                     }
                 }
-                case LOCAL_PLAYER -> {
-                    // Only from the primary source; other sources dropped.
-                    // Known limitation: no AddPlayer transform — deferred to Phase 4.
-                    if (cur.sourceIdx() == ctx.primarySourceIdx) {
-                        writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+
+                Category cat = classifier.classify(cur.head().action());
+                switch (cat) {
+                    case TICK -> {
+                        // NextTick already intercalated above; nothing more to emit
                     }
-                }
-                case WORLD -> {
-                    // Passthrough — no LWW merge in Phase 3, deferred to Phase 4.
-                    writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
-                }
-                case ENTITY -> {
-                    // Passthrough — no entity dedup in Phase 3, deferred to Phase 4.
-                    writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
-                }
-                case PASSTHROUGH -> {
-                    writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
-                }
-                case EGO -> {
-                    // Route to per-player ego segment
-                    byte[] payload = ActionType.encode(cur.head().action());
-                    UUID playerUuid = UUID.fromString(
-                            ctx.sources.get(cur.sourceIdx()).metadata().uuid());
-                    egoRouter.writeEgo(playerUuid, tickAbs, payload);
-                }
-                case GLOBAL -> {
-                    if (cur.head().action() instanceof Action.GamePacket gp) {
-                        int pid = PacketClassifier.readPacketId(gp.bytes());
-                        if (globalDeduper.shouldEmit(pid, tickAbs, gp.bytes())) {
-                            if (gamePacketOrdinal >= 0) {
-                                mainWriter.writeLiveAction(gamePacketOrdinal, gp.bytes());
-                            }
-                        } else {
-                            ctx.report.stats.globalPacketsDeduped++;
+                    case CONFIG -> {
+                        // Emit once across all sources — dedup by content hash (packetTypeId=-1)
+                        byte[] payload = ActionType.encode(cur.head().action());
+                        if (globalDeduper.shouldEmit(-1, tickAbs, payload)) {
+                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
                         }
                     }
-                    // Non-GamePacket GLOBAL (unlikely but safe to passthrough)
-                    else {
+                    case LOCAL_PLAYER -> {
+                        // Only from the primary source; other sources dropped.
+                        // Known limitation: no AddPlayer transform — deferred to Phase 4.
+                        if (cur.sourceIdx() == ctx.primarySourceIdx) {
+                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        }
+                    }
+                    case WORLD -> {
+                        // Passthrough — no LWW merge in Phase 3, deferred to Phase 4.
                         writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
-                }
-                case CACHE_REF -> {
-                    if (cur.head().action() instanceof Action.CacheChunkRef ref
-                            && cacheRefOrdinal >= 0) {
-                        int globalIdx = cacheRemapper.remap(cur.sourceIdx(), ref.cacheIndex());
-                        byte[] newPayload = writeVarIntToBytes(globalIdx);
-                        mainWriter.writeLiveAction(cacheRefOrdinal, newPayload);
+                    case ENTITY -> {
+                        // Passthrough — no entity dedup in Phase 3, deferred to Phase 4.
+                        writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                    }
+                    case PASSTHROUGH -> {
+                        writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                    }
+                    case EGO -> {
+                        // Route to per-player ego segment
+                        byte[] payload = ActionType.encode(cur.head().action());
+                        UUID playerUuid = UUID.fromString(
+                                ctx.sources.get(cur.sourceIdx()).metadata().uuid());
+                        egoRouter.writeEgo(playerUuid, tickAbs, payload);
+                    }
+                    case GLOBAL -> {
+                        if (cur.head().action() instanceof Action.GamePacket gp) {
+                            int pid = PacketClassifier.readPacketId(gp.bytes());
+                            if (globalDeduper.shouldEmit(pid, tickAbs, gp.bytes())) {
+                                if (gamePacketOrdinal >= 0) {
+                                    mainWriter.writeLiveAction(gamePacketOrdinal, gp.bytes());
+                                }
+                            } else {
+                                ctx.report.stats.globalPacketsDeduped++;
+                            }
+                        }
+                        // Non-GamePacket GLOBAL (unlikely but safe to passthrough)
+                        else {
+                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        }
+                    }
+                    case CACHE_REF -> {
+                        if (cur.head().action() instanceof Action.CacheChunkRef ref
+                                && cacheRefOrdinal >= 0) {
+                            int globalIdx = cacheRemapper.remap(cur.sourceIdx(), ref.cacheIndex());
+                            byte[] newPayload = writeVarIntToBytes(globalIdx);
+                            mainWriter.writeLiveAction(cacheRefOrdinal, newPayload);
+                        }
                     }
                 }
+
+                // Periodic purge
+                if (tickAbs - lastPurge > 100) {
+                    entityMerger.purge(tickAbs);
+                    globalDeduper.purgeOlderThan(tickAbs - 200);
+                    lastPurge = tickAbs;
+                }
+
+                // Advance cursor
+                if (cur.it().hasNext()) {
+                    pq.add(new SourceCursor(cur.sourceIdx(), cur.it(), cur.it().next()));
+                }
+
+                processed++;
+                if (processed % 10_000 == 0) {
+                    progress.accept(String.format("Streaming merge... tick %d / %d",
+                            tickAbs, ctx.report.mergedTotalTicks));
+                }
             }
 
-            // Periodic purge
-            if (tickAbs - lastPurge > 100) {
-                entityMerger.purge(tickAbs);
-                globalDeduper.purgeOlderThan(tickAbs - 200);
-                lastPurge = tickAbs;
+            // 4. Finish writer and write c0.flashback
+            ByteBuf mainBytes = mainWriter.finish();
+            try {
+                Files.write(destTmp.resolve("c0.flashback"), ByteBufUtil.getBytes(mainBytes));
+            } finally {
+                mainBytes.release();
             }
 
-            // Advance cursor
-            if (cur.it().hasNext()) {
-                pq.add(new SourceCursor(cur.sourceIdx(), cur.it(), cur.it().next()));
+            // 5. Finalize ego segments
+            egoRouter.finishAll();
+            ctx.report.stats.egoTracks = new ArrayList<>();
+            for (var uuid : egoRouter.egoPlayers()) {
+                ctx.report.stats.egoTracks.add(uuid.toString());
             }
 
-            processed++;
-            if (processed % 10_000 == 0) {
-                progress.accept(String.format("Streaming merge... tick %d / %d",
-                        tickAbs, ctx.report.mergedTotalTicks));
-            }
-        }
-
-        // 3. Close all source streams
-        for (var s : streams) {
-            s.close();
-        }
-
-        // 4. Finish writer and write c0.flashback
-        ByteBuf mainBytes = mainWriter.finish();
-        try {
-            Files.write(destTmp.resolve("c0.flashback"), ByteBufUtil.getBytes(mainBytes));
+            // Update entity merger stats
+            ctx.report.stats.entitiesMergedByUuid       = entityMerger.uuidMergedCount();
+            ctx.report.stats.entitiesMergedByHeuristic  = entityMerger.heuristicMergedCount();
+            ctx.report.stats.entitiesAmbiguousMerged    = entityMerger.ambiguousMergedCount();
         } finally {
-            mainBytes.release();
+            // 3. Close all source streams — guaranteed on any exception path
+            for (Stream<PacketEntry> s : streams) {
+                try {
+                    s.close();
+                } catch (Exception ignore) {
+                }
+            }
         }
-
-        // 5. Finalize ego segments
-        egoRouter.finishAll();
-        ctx.report.stats.egoTracks = new ArrayList<>();
-        for (var uuid : egoRouter.egoPlayers()) {
-            ctx.report.stats.egoTracks.add(uuid.toString());
-        }
-
-        // Update entity merger stats
-        ctx.report.stats.entitiesMergedByUuid       = entityMerger.uuidMergedCount();
-        ctx.report.stats.entitiesMergedByHeuristic  = entityMerger.heuristicMergedCount();
-        ctx.report.stats.entitiesAmbiguousMerged    = entityMerger.ambiguousMergedCount();
     }
 
     /**

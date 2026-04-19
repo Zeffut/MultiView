@@ -32,6 +32,7 @@ public final class MergeReport {
         public List<String> egoTracks = new ArrayList<>();
         public int chunkCachesConcatenated;
         public Map<String, Integer> passthroughPackets = new LinkedHashMap<>();
+        public int outOfOrderPackets;
     }
 
     public void warn(String msg) { warnings.add(msg); }
