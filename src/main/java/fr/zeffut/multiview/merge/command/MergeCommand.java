@@ -49,8 +49,9 @@ public final class MergeCommand {
     }
 
     private static RequiredArgumentBuilder<FabricClientCommandSource, String> replayArg(String name) {
+        // string() accepts quoted strings for Unicode folder names (e.g. "Sénat_...")
         return RequiredArgumentBuilder.<FabricClientCommandSource, String>
-                argument(name, StringArgumentType.word())
+                argument(name, StringArgumentType.string())
                 .suggests(replayFolderSuggestions());
     }
 
