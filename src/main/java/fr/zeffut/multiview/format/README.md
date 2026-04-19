@@ -246,3 +246,32 @@ The test `FlashbackReaderIntegrationTest.openAllAvailableReplays()` iterates
 any replay folder under `run/replay/` and enforces `sum == total_ticks` plus
 "at least one entry decoded", so future regressions are caught locally on
 every `./gradlew test`.
+
+## 10. Writer
+
+Symétrique du reader. API publique :
+
+```java
+FlashbackReplay source = FlashbackReader.open(srcFolder);
+FlashbackWriter.copy(source, destFolder);   // reproduit un replay complet
+```
+
+Garanties :
+- Chaque `cN.flashback` produit est **byte-for-byte identique** à son pendant source.
+- `level_chunk_caches/*` et `icon.png` sont copiés octet par octet.
+- `metadata.json` est re-sérialisé via Gson (pretty-print, pas d'échappement HTML).
+  L'ordre des clés et des entrées de map est préservé grâce à `LinkedHashMap` dans
+  `FlashbackMetadata`.
+
+Primitives bas niveau :
+- `SegmentWriter(segmentName, registry)` — écrit magic + registry, puis accepte
+  des actions snapshot via `writeSnapshotAction(ordinal, payload)`, un
+  `endSnapshot()`, puis des actions live via `writeLiveAction(ordinal, payload)`.
+- `FlashbackByteBuf.writeVarInt / writeInt / writeString / writeBytes`.
+- `ActionType.idOf(Action)` + `ActionType.encode(Action)` — utiles pour la
+  Phase 3 (merge) qui construira des segments depuis des streams d'actions typées
+  plutôt que depuis un reader source.
+
+Validation : le test `FlashbackWriterIntegrationTest` copie un replay complet
+dans un `@TempDir` et vérifie `assertArrayEquals` sur tous les fichiers binaires
++ cohérence sémantique de `metadata.json` après re-parsing.

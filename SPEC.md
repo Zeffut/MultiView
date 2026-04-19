@@ -384,6 +384,24 @@ Ces questions nécessitent d'avoir avancé un peu dans le reverse-engineering av
 - Warning observé (non bloquant) : `lattice1219.mixins.json:MixinDropdownWidgetEntry.render` échoue au APPLY — mixin de la lib `lattice` bundlée dans Flashback 0.39.4, probable incompat mineure avec mappings 1.21.11+build.4. N'affecte pas le core replay, à surveiller en Phase 5.
 - Flashback jar placé manuellement dans `libs/` et `run/mods/` — tous deux gitignorés.
 
+### 2026-04-19 — Phase 2 terminée : writer + round-trip byte-for-byte
+- API : `FlashbackWriter.copy(source, dest)` reproduit un replay complet.
+- Chaque segment écrit est byte-for-byte identique à son original (prouvé par
+  `SegmentRoundTripTest` sur les 67 segments des deux POV réels de dev).
+- `level_chunk_caches/*` et `icon.png` copiés octet par octet.
+- `metadata.json` re-sérialisé via Gson (pretty-print), cohérent sémantiquement
+  après re-parsing.
+- Nouvelles classes : `SegmentWriter` (symétrique de `SegmentReader`),
+  `FlashbackWriter` (wrapper haut niveau).
+- Extensions : `FlashbackByteBuf` (write*), `FlashbackMetadata.toJson`,
+  `ActionType.idOf` / `ActionType.encode` (inverse de `decode`).
+- `SegmentReader.RawAction` + `nextRaw()` ajoutés pour round-trip lossless.
+- Validation : `/mv inspect` sur un replay round-trippé via `FlashbackWriter.copy`
+  produit un histogramme d'actions strictement identique au replay source
+  (3 697 774 entries, même breakdown au byte près) — preuve bout-en-bout que le
+  writer préserve l'intégralité de l'information.
+- 43 tests verts au total. CI toujours green (tests d'intégration conditionnels).
+
 ### 2026-04-19 — Phase 1 terminée : lecteur du format .flashback
 - Format `.flashback` documenté dans `src/main/java/fr/zeffut/multiview/format/README.md` (spec §2–§9), reverse-engineered via **Arcade** (CasualChampionships/Arcade, MIT). Aucune ligne Moulberry consultée.
 - Structure clé : chaque segment = magic `0xD780E884` + registry VarInt de N namespaced ids + snapshot bounded par int32 BE + live stream jusqu'à EOF. Actions = VarInt ordinal + int32 BE payloadSize + payload.
