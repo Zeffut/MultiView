@@ -45,6 +45,26 @@ public final class FlashbackByteBuf {
         return underlying.isReadable();
     }
 
+    public void writeVarInt(int value) {
+        VarInts.writeVarInt(underlying, value);
+    }
+
+    /** int32 big-endian. */
+    public void writeInt(int value) {
+        underlying.writeInt(value);
+    }
+
+    /** Écrit la longueur VarInt puis les bytes UTF-8. */
+    public void writeString(String value) {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        writeVarInt(bytes.length);
+        underlying.writeBytes(bytes);
+    }
+
+    public void writeBytes(byte[] bytes) {
+        underlying.writeBytes(bytes);
+    }
+
     public ByteBuf raw() {
         return underlying;
     }

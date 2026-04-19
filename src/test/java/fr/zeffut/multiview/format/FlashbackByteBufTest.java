@@ -75,4 +75,36 @@ class FlashbackByteBufTest {
         buf.readBytes(2);
         assertEquals(2, buf.readerIndex());
     }
+
+    @Test
+    void writeVarIntRoundTrip() {
+        FlashbackByteBuf out = new FlashbackByteBuf(Unpooled.buffer());
+        out.writeVarInt(300);
+        FlashbackByteBuf in = new FlashbackByteBuf(out.raw());
+        assertEquals(300, in.readVarInt());
+    }
+
+    @Test
+    void writeIntRoundTrip() {
+        FlashbackByteBuf out = new FlashbackByteBuf(Unpooled.buffer());
+        out.writeInt(0xD780E884);
+        FlashbackByteBuf in = new FlashbackByteBuf(out.raw());
+        assertEquals(0xD780E884, in.readInt());
+    }
+
+    @Test
+    void writeStringRoundTrip() {
+        FlashbackByteBuf out = new FlashbackByteBuf(Unpooled.buffer());
+        out.writeString("flashback:action/next_tick");
+        FlashbackByteBuf in = new FlashbackByteBuf(out.raw());
+        assertEquals("flashback:action/next_tick", in.readString());
+    }
+
+    @Test
+    void writeBytesAppendsExactly() {
+        FlashbackByteBuf out = new FlashbackByteBuf(Unpooled.buffer());
+        out.writeBytes(new byte[] { 0x01, 0x02, 0x03 });
+        assertEquals(3, out.raw().readableBytes());
+        assertArrayEquals(new byte[] { 0x01, 0x02, 0x03 }, out.readBytes(3));
+    }
 }
