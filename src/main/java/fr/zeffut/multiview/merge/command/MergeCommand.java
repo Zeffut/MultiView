@@ -86,11 +86,11 @@ public final class MergeCommand {
                 });
                 MinecraftClient.getInstance().execute(() ->
                         source.sendFeedback(Text.literal(String.format(
-                                "[MultiView] Done. %d entities merged, %d blocks overwritten, %d globals deduped. See run/replay/%s/merge-report.json.",
+                                "[MultiView] Done. %d entities merged, %d blocks overwritten, %d globals deduped. Report: %s",
                                 report.stats.entitiesMergedByUuid + report.stats.entitiesMergedByHeuristic,
                                 report.stats.blocksLwwOverwrites,
                                 report.stats.globalPacketsDeduped,
-                                outputName))));
+                                dest.resolve("merge-report.json").toAbsolutePath()))));
             } catch (Throwable t) {
                 t.printStackTrace();
                 MinecraftClient.getInstance().execute(() ->
