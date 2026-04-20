@@ -359,7 +359,28 @@ public final class MergeOrchestrator {
         List<String> mainRegistry = extractRegistryFromFirstSegment(
                 ctx.sources.get(ctx.primarySourceIdx));
         SegmentWriter mainWriter = new SegmentWriter("c0.flashback", mainRegistry);
-        // Phase 3: empty snapshot — all content goes to the live stream
+
+        // Copy snapshot section of primary source's first segment into our snapshot.
+        // Flashback requires init packets (dimension setup, registries, local player,
+        // initial chunks, etc.) to be present in the snapshot; without them the world
+        // opens empty.
+        int snapshotActionsCopied = 0;
+        List<Path> primarySegments = ctx.sources.get(ctx.primarySourceIdx).segmentPaths();
+        if (!primarySegments.isEmpty()) {
+            Path firstSeg = primarySegments.get(0);
+            byte[] firstSegBytes = Files.readAllBytes(firstSeg);
+            FlashbackByteBuf firstSegBuf = new FlashbackByteBuf(
+                    io.netty.buffer.Unpooled.wrappedBuffer(firstSegBytes));
+            SegmentReader snapshotReader = new SegmentReader(
+                    firstSeg.getFileName().toString(), firstSegBuf);
+            while (snapshotReader.hasNext() && snapshotReader.isPeekInSnapshot()) {
+                SegmentReader.RawAction raw = snapshotReader.nextRaw();
+                mainWriter.writeSnapshotAction(raw.ordinal(), raw.payload());
+                snapshotActionsCopied++;
+            }
+        }
+        progress.accept(String.format("Transferred %d snapshot actions from primary source's first segment",
+                snapshotActionsCopied));
         mainWriter.endSnapshot();
 
         int nextTickOrdinal    = mainRegistry.indexOf(ActionType.NEXT_TICK);
@@ -394,6 +415,19 @@ public final class MergeOrchestrator {
             while (!pq.isEmpty()) {
                 SourceCursor cur = pq.poll();
                 int tickAbs = ctx.toAbsTick(cur.sourceIdx(), cur.head().tick());
+
+                // Skip snapshot actions — they were already written into our snapshot section
+                // above (for the primary source) or should not be duplicated in the live stream.
+                // Do this BEFORE intercalating NextTick actions: snapshot entries have tick==baseTick
+                // (typically 0) which would otherwise trigger spurious NextTick intercalation.
+                if (cur.head().inSnapshot()) {
+                    // Advance cursor and continue without emitting
+                    if (cur.it().hasNext()) {
+                        pq.add(new SourceCursor(cur.sourceIdx(), cur.it(), cur.it().next()));
+                    }
+                    processed++;
+                    continue;
+                }
 
                 // Check for out-of-order packets (clock desync between sources or bad offset)
                 if (tickAbs < tickAbsEmitted) {
