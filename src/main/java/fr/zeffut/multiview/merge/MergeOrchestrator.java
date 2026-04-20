@@ -135,6 +135,7 @@ public final class MergeOrchestrator {
             EntityPacketRewriter entityRewriter = new EntityPacketRewriter(
                     entityMerger, idRemapper, povTracker, replays.size());
             WorldStateMerger worldMerger = new WorldStateMerger();
+            WorldPacketRewriter worldRewriter = new WorldPacketRewriter(worldMerger);
             GlobalDeduper globalDeduper = new GlobalDeduper();
             CacheRemapper cacheRemapper = new CacheRemapper();
             PacketClassifier classifier = new PacketClassifier(
@@ -185,8 +186,8 @@ public final class MergeOrchestrator {
 
             // 7. Stream merge
             progress.accept("Streaming merge...");
-            streamMerge(ctx, classifier, worldMerger, entityMerger, entityRewriter, idRemapper,
-                    globalDeduper, cacheRemapper, povTracker, fileOffset, destTmp, progress);
+            streamMerge(ctx, classifier, worldMerger, worldRewriter, entityMerger, entityRewriter,
+                    idRemapper, globalDeduper, cacheRemapper, povTracker, fileOffset, destTmp, progress);
 
             // Step A: Write merged metadata.json
             progress.accept("Écriture metadata.json...");
@@ -364,7 +365,8 @@ public final class MergeOrchestrator {
     }
 
     private static void streamMerge(MergeContext ctx, PacketClassifier classifier,
-                                    WorldStateMerger worldMerger, EntityMerger entityMerger,
+                                    WorldStateMerger worldMerger, WorldPacketRewriter worldRewriter,
+                                    EntityMerger entityMerger,
                                     EntityPacketRewriter entityRewriter, IdRemapper idRemapper,
                                     GlobalDeduper globalDeduper, CacheRemapper cacheRemapper,
                                     SourcePovTracker povTracker, int[] fileOffset, Path destTmp,
@@ -494,8 +496,20 @@ public final class MergeOrchestrator {
                         writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case WORLD -> {
-                        // Passthrough — no LWW merge in Phase 3, deferred to Phase 4.
-                        writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        // Phase 4.E: LWW arbitration for block updates via WorldPacketRewriter.
+                        // BlockUpdate and SectionBlocksUpdate packets are decoded, LWW-tested,
+                        // and re-encoded (or dropped). Other WORLD packets (chunk load/unload,
+                        // light, block entity, etc.) pass through unchanged.
+                        if (cur.head().action() instanceof Action.GamePacket gp) {
+                            byte[] rewritten = worldRewriter.rewrite(
+                                    cur.sourceIdx(), tickAbs, gp.bytes());
+                            if (rewritten != null && gamePacketOrdinal >= 0) {
+                                mainWriter.writeLiveAction(gamePacketOrdinal, rewritten);
+                            }
+                            // rewritten == null → stale block update, drop silently
+                        } else {
+                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        }
                     }
                     case ENTITY -> {
                         // Phase 4.D: decode entity packets, remap IDs via EntityMerger/IdRemapper.
@@ -584,6 +598,9 @@ public final class MergeOrchestrator {
             ctx.report.stats.entitiesMergedByUuid       = entityMerger.uuidMergedCount();
             ctx.report.stats.entitiesMergedByHeuristic  = entityMerger.heuristicMergedCount();
             ctx.report.stats.entitiesAmbiguousMerged    = entityMerger.ambiguousMergedCount();
+            // Update block LWW stats
+            ctx.report.stats.blocksLwwConflicts   = worldMerger.lwwConflicts();
+            ctx.report.stats.blocksLwwOverwrites  = worldMerger.lwwOverwrites();
         } finally {
             // 3. Close all source streams — guaranteed on any exception path
             for (Stream<PacketEntry> s : streams) {
