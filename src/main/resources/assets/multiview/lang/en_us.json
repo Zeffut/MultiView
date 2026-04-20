@@ -1,0 +1,8 @@
+{
+  "multiview.button.multiselect": "Multi-select",
+  "multiview.button.multiselect.on": "Multi-select ON",
+  "multiview.button.merge_selected": "Merge Selected",
+  "multiview.button.merge_selected.count": "Merge %d Replays",
+  "multiview.merge_progress.title": "Merging Replays...",
+  "multiview.merge_progress.done": "Merge complete!"
+}

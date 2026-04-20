@@ -2,6 +2,7 @@ package fr.zeffut.multiview;
 
 import fr.zeffut.multiview.inspect.InspectCommand;
 import fr.zeffut.multiview.merge.command.MergeCommand;
+import fr.zeffut.multiview.ui.MergeUi;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import org.slf4j.Logger;
@@ -18,5 +19,7 @@ public final class MultiViewMod implements ClientModInitializer {
             InspectCommand.register(dispatcher);
             MergeCommand.register(dispatcher);
         });
+        // Phase 5: register merge UI buttons in Flashback's SelectReplayScreen
+        MergeUi.register();
     }
 }

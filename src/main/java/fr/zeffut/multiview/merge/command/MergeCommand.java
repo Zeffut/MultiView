@@ -78,6 +78,8 @@ public final class MergeCommand {
 
         MergeOptions options = new MergeOptions(sources, dest, Map.of(), false);
 
+        source.sendFeedback(Text.literal(
+                "[MultiView] \u26a0 /mv merge is deprecated — use the Merge button in the Select Replay screen (Phase 5)."));
         source.sendFeedback(Text.literal("[MultiView] Starting merge of " + sourceNames.size() + " sources..."));
         EXECUTOR.submit(() -> {
             try {
