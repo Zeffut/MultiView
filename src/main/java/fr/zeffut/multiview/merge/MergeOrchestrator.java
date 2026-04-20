@@ -461,11 +461,11 @@ public final class MergeOrchestrator {
                         }
                     }
                     case LOCAL_PLAYER -> {
-                        // Only from the primary source; other sources dropped.
-                        // Known limitation: no AddPlayer transform — deferred to Phase 4.
-                        if (cur.sourceIdx() == ctx.primarySourceIdx) {
-                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
-                        }
+                        // Phase 4.A experimental: emit CreateLocalPlayer from ALL sources
+                        // (not just primary). Flashback may or may not tolerate multiple
+                        // local players — test and iterate. Proper AddPlayer transform
+                        // remains the fallback if this causes crashes.
+                        writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case WORLD -> {
                         // Passthrough — no LWW merge in Phase 3, deferred to Phase 4.
