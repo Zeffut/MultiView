@@ -59,6 +59,7 @@ public final class MergeOrchestrator {
 
         // destTmp declared before try so the catch block can clean it up
         Path destTmp = null;
+        List<Path> tempExtractDirs = new ArrayList<>();
 
         try {
             // Check destination before opening sources
@@ -74,11 +75,30 @@ public final class MergeOrchestrator {
                 }
             }
 
-            // 1. Open sources
+            // 1. Open sources — extract zips to temp folders since FlashbackReader reads folders
             progress.accept("Ouverture des sources...");
             List<FlashbackReplay> replays = new ArrayList<>();
             for (Path src : options.sources()) {
-                replays.add(FlashbackReader.open(src));
+                Path sourceToOpen = src;
+                if (Files.isRegularFile(src) && src.getFileName().toString().endsWith(".zip")) {
+                    Path tempDir = Files.createTempDirectory("multiview-source-");
+                    tempExtractDirs.add(tempDir);
+                    try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(
+                            Files.newInputStream(src))) {
+                        java.util.zip.ZipEntry entry;
+                        while ((entry = zis.getNextEntry()) != null) {
+                            Path out = tempDir.resolve(entry.getName());
+                            if (entry.isDirectory()) {
+                                Files.createDirectories(out);
+                            } else {
+                                Files.createDirectories(out.getParent());
+                                Files.copy(zis, out, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                            }
+                        }
+                    }
+                    sourceToOpen = tempDir;
+                }
+                replays.add(FlashbackReader.open(sourceToOpen));
             }
 
             // 2. Find anchors + align
@@ -186,7 +206,8 @@ public final class MergeOrchestrator {
 
             // 7. Stream merge
             progress.accept("Streaming merge...");
-            streamMerge(ctx, classifier, worldMerger, worldRewriter, entityMerger, entityRewriter,
+            Map<String, Integer> segmentDurations = streamMerge(
+                    ctx, classifier, worldMerger, worldRewriter, entityMerger, entityRewriter,
                     idRemapper, globalDeduper, cacheRemapper, povTracker, fileOffset, destTmp, progress);
 
             // Step A: Write merged metadata.json
@@ -194,7 +215,7 @@ public final class MergeOrchestrator {
             FlashbackMetadata primaryMeta = replays.get(primaryIdx).metadata();
             FlashbackMetadata mergedMeta = buildMergedMetadata(
                     primaryMeta, replays, alignment.mergedTotalTicks(),
-                    destFinal.getFileName().toString());
+                    destFinal.getFileName().toString(), segmentDurations);
             try (var w = Files.newBufferedWriter(destTmp.resolve("metadata.json"))) {
                 mergedMeta.toJson(w);
             }
@@ -226,6 +247,11 @@ public final class MergeOrchestrator {
             deleteRecursively(destTmp);
             destTmp = null; // don't delete on catch
 
+            // Clean up any zip-extracted source temp dirs
+            for (Path td : tempExtractDirs) {
+                try { deleteRecursively(td); } catch (IOException ignore) {}
+            }
+
             progress.accept("Merge terminé → " + destZip.getFileName());
             return report;
 
@@ -240,6 +266,10 @@ public final class MergeOrchestrator {
             try {
                 Files.deleteIfExists(destZip);
             } catch (IOException ignore) {}
+            // Clean up zip-extracted source temp dirs
+            for (Path td : tempExtractDirs) {
+                try { deleteRecursively(td); } catch (IOException ignore) {}
+            }
             throw e;
         }
     }
@@ -325,23 +355,26 @@ public final class MergeOrchestrator {
      * Builds a merged {@link FlashbackMetadata} by constructing a JSON object and
      * deserializing it via {@link FlashbackMetadata#fromJson(java.io.Reader)}.
      * <p>
-     * Fields sourced from primary replay metadata; chunks aggregated (union, last-write wins);
-     * markers and customNamespacesForRegistries start empty.
+     * Fields sourced from primary replay metadata; chunks aggregated from the provided
+     * segment-duration map (insertion-ordered); markers and customNamespacesForRegistries
+     * start empty.
+     *
+     * @param segmentDurations ordered map of segment filename → duration in ticks
      */
     private static FlashbackMetadata buildMergedMetadata(
             FlashbackMetadata primary,
             List<FlashbackReplay> replays,
             int mergedTotalTicks,
-            String destName) {
+            String destName,
+            Map<String, Integer> segmentDurations) {
 
-        // Phase 3: we write exactly one merged segment (c0.flashback) covering all ticks.
-        // Source replays may have c0, c1, … but the merged output has only c0.
-        // Phase 4 can split into multiple segments if needed.
         Map<String, Object> chunksMap = new LinkedHashMap<>();
-        Map<String, Object> c0Map = new LinkedHashMap<>();
-        c0Map.put("duration", mergedTotalTicks);
-        c0Map.put("forcePlaySnapshot", false);
-        chunksMap.put("c0.flashback", c0Map);
+        for (Map.Entry<String, Integer> e : segmentDurations.entrySet()) {
+            Map<String, Object> segMap = new LinkedHashMap<>();
+            segMap.put("duration", e.getValue());
+            segMap.put("forcePlaySnapshot", false);
+            chunksMap.put(e.getKey(), segMap);
+        }
 
         // Build JSON representation using Gson's JsonObject to avoid reflection
         com.google.gson.Gson gson = new com.google.gson.GsonBuilder()
@@ -364,7 +397,16 @@ public final class MergeOrchestrator {
         return FlashbackMetadata.fromJson(new StringReader(json));
     }
 
-    private static void streamMerge(MergeContext ctx, PacketClassifier classifier,
+    /** Number of ticks per output segment (~5 min of gameplay at 20 ticks/s). */
+    private static final int SEGMENT_TICKS = 6000;
+
+    /**
+     * Performs the streaming k-way merge and writes cN.flashback segment files to destTmp.
+     *
+     * @return ordered map of segment filename → duration in ticks (insertion order = c0, c1, …)
+     */
+    private static Map<String, Integer> streamMerge(
+                                    MergeContext ctx, PacketClassifier classifier,
                                     WorldStateMerger worldMerger, WorldPacketRewriter worldRewriter,
                                     EntityMerger entityMerger,
                                     EntityPacketRewriter entityRewriter, IdRemapper idRemapper,
@@ -372,10 +414,18 @@ public final class MergeOrchestrator {
                                     SourcePovTracker povTracker, int[] fileOffset, Path destTmp,
                                     Consumer<String> progress) throws IOException {
 
+        // Segment durations: insertion-ordered, populated as each segment is closed.
+        Map<String, Integer> segmentDurations = new LinkedHashMap<>();
+
         // 1. Extract registry from primary source's first segment → main stream registry
         List<String> mainRegistry = extractRegistryFromFirstSegment(
                 ctx.sources.get(ctx.primarySourceIdx));
-        SegmentWriter mainWriter = new SegmentWriter("c0.flashback", mainRegistry);
+
+        // Helper to open a new segment writer with the proper snapshot content.
+        // c0 gets the full primary snapshot; subsequent segments get an empty snapshot
+        // (sequential playback from c0 snapshot is sufficient; random-seek to mid-segment
+        // is a known limitation).
+        SegmentWriter currentWriter = new SegmentWriter("c0.flashback", mainRegistry);
 
         // Copy snapshot section of primary source's first segment into our snapshot.
         // Flashback requires init packets (dimension setup, registries, local player,
@@ -392,18 +442,20 @@ public final class MergeOrchestrator {
                     firstSeg.getFileName().toString(), firstSegBuf);
             while (snapshotReader.hasNext() && snapshotReader.isPeekInSnapshot()) {
                 SegmentReader.RawAction raw = snapshotReader.nextRaw();
-                mainWriter.writeSnapshotAction(raw.ordinal(), raw.payload());
+                currentWriter.writeSnapshotAction(raw.ordinal(), raw.payload());
                 snapshotActionsCopied++;
             }
         }
         progress.accept(String.format("Transferred %d snapshot actions from primary source's first segment",
                 snapshotActionsCopied));
-        mainWriter.endSnapshot();
+        currentWriter.endSnapshot();
 
         // Open streaming file for c0.flashback — avoids accumulating the entire live stream
         // in a single in-memory ByteBuf (which would hit Netty's Integer.MAX_VALUE array limit
         // for long replays). Live actions are written directly to disk from this point on.
-        mainWriter.openStreamingFile(destTmp.resolve("c0.flashback"));
+        int currentSegmentIdx = 0;
+        int currentSegmentStart = 0;
+        currentWriter.openStreamingFile(destTmp.resolve("c0.flashback"));
 
         int nextTickOrdinal    = mainRegistry.indexOf(ActionType.NEXT_TICK);
         int gamePacketOrdinal  = mainRegistry.indexOf(ActionType.GAME_PACKET);
@@ -462,11 +514,46 @@ public final class MergeOrchestrator {
                     ctx.report.stats.outOfOrderPackets++;
                 }
 
+                // Segment boundary check: if we've accumulated SEGMENT_TICKS ticks in the current
+                // segment, close it and open the next one before intercalating more NextTicks.
+                // tickAbsEmitted tracks global ticks; segment duration = tickAbsEmitted - currentSegmentStart.
+                // We check against tickAbs (the incoming absolute tick) so we roll over before
+                // emitting NextTicks that would belong to the new segment.
+                if (tickAbsEmitted - currentSegmentStart >= SEGMENT_TICKS) {
+                    int segDuration = tickAbsEmitted - currentSegmentStart;
+                    String segName = "c" + currentSegmentIdx + ".flashback";
+                    currentWriter.finishStreaming();
+                    segmentDurations.put(segName, segDuration);
+
+                    // Open next segment with an empty snapshot
+                    currentSegmentIdx++;
+                    currentSegmentStart = tickAbsEmitted;
+                    String nextSegName = "c" + currentSegmentIdx + ".flashback";
+                    currentWriter = new SegmentWriter(nextSegName, mainRegistry);
+                    currentWriter.endSnapshot(); // empty snapshot for cN where N > 0
+                    currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
+                }
+
                 // Intercalate NextTick actions up to tickAbs
                 while (tickAbsEmitted < tickAbs) {
                     tickAbsEmitted++;
                     if (nextTickOrdinal >= 0) {
-                        mainWriter.writeLiveAction(nextTickOrdinal, new byte[0]);
+                        currentWriter.writeLiveAction(nextTickOrdinal, new byte[0]);
+                    }
+                    // Check segment boundary mid-intercalation as well: if we just crossed
+                    // a SEGMENT_TICKS boundary while filling in missing ticks, roll over.
+                    if (tickAbsEmitted - currentSegmentStart >= SEGMENT_TICKS && tickAbsEmitted < tickAbs) {
+                        int segDuration = tickAbsEmitted - currentSegmentStart;
+                        String segName = "c" + currentSegmentIdx + ".flashback";
+                        currentWriter.finishStreaming();
+                        segmentDurations.put(segName, segDuration);
+
+                        currentSegmentIdx++;
+                        currentSegmentStart = tickAbsEmitted;
+                        String nextSegName = "c" + currentSegmentIdx + ".flashback";
+                        currentWriter = new SegmentWriter(nextSegName, mainRegistry);
+                        currentWriter.endSnapshot();
+                        currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
                     }
                 }
 
@@ -479,7 +566,7 @@ public final class MergeOrchestrator {
                         // Emit once across all sources — dedup by content hash (packetTypeId=-1)
                         byte[] payload = ActionType.encode(cur.head().action());
                         if (globalDeduper.shouldEmit(-1, tickAbs, payload)) {
-                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         }
                     }
                     case LOCAL_PLAYER -> {
@@ -493,7 +580,7 @@ public final class MergeOrchestrator {
                         if (cur.head().action() instanceof Action.CreatePlayer cp) {
                             entityRewriter.recordLocalPlayerUuid(cur.sourceIdx(), cp.bytes());
                         }
-                        writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case WORLD -> {
                         // Phase 4.E: LWW arbitration for block updates via WorldPacketRewriter.
@@ -504,11 +591,11 @@ public final class MergeOrchestrator {
                             byte[] rewritten = worldRewriter.rewrite(
                                     cur.sourceIdx(), tickAbs, gp.bytes());
                             if (rewritten != null && gamePacketOrdinal >= 0) {
-                                mainWriter.writeLiveAction(gamePacketOrdinal, rewritten);
+                                currentWriter.writeLiveAction(gamePacketOrdinal, rewritten);
                             }
                             // rewritten == null → stale block update, drop silently
                         } else {
-                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         }
                     }
                     case ENTITY -> {
@@ -517,26 +604,26 @@ public final class MergeOrchestrator {
                             byte[] rewritten = entityRewriter.rewrite(
                                     cur.sourceIdx(), tickAbs, gp.bytes());
                             if (gamePacketOrdinal >= 0) {
-                                mainWriter.writeLiveAction(gamePacketOrdinal, rewritten);
+                                currentWriter.writeLiveAction(gamePacketOrdinal, rewritten);
                             }
                         } else if (cur.head().action() instanceof Action.MoveEntities me) {
                             // MoveEntities: update POV tracker, then passthrough.
                             // TODO Phase 4.E: remap entity IDs within MoveEntities payload.
                             entityRewriter.processMoveEntities(
                                     cur.sourceIdx(), tickAbs, me.bytes());
-                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         } else {
-                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         }
                     }
                     case PASSTHROUGH -> {
-                        writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case EGO -> {
                         // Primary only: routes HUD packets to main stream (Flashback handles natively).
                         // Secondary EGOs dropped: they'd corrupt primary's HUD state.
                         if (cur.sourceIdx() == ctx.primarySourceIdx) {
-                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         }
                     }
                     case GLOBAL -> {
@@ -544,7 +631,7 @@ public final class MergeOrchestrator {
                             int pid = PacketClassifier.readPacketId(gp.bytes());
                             if (globalDeduper.shouldEmit(pid, tickAbs, gp.bytes())) {
                                 if (gamePacketOrdinal >= 0) {
-                                    mainWriter.writeLiveAction(gamePacketOrdinal, gp.bytes());
+                                    currentWriter.writeLiveAction(gamePacketOrdinal, gp.bytes());
                                 }
                             } else {
                                 ctx.report.stats.globalPacketsDeduped++;
@@ -552,7 +639,7 @@ public final class MergeOrchestrator {
                         }
                         // Non-GamePacket GLOBAL (unlikely but safe to passthrough)
                         else {
-                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         }
                     }
                     case CACHE_REF -> {
@@ -567,7 +654,7 @@ public final class MergeOrchestrator {
                             int globalFileIdx = fileOffset[cur.sourceIdx()] + localFileIdx;
                             int globalIdx     = globalFileIdx * 10000 + localEntry;
                             byte[] newPayload = writeVarIntToBytes(globalIdx);
-                            mainWriter.writeLiveAction(cacheRefOrdinal, newPayload);
+                            currentWriter.writeLiveAction(cacheRefOrdinal, newPayload);
                         }
                     }
                 }
@@ -591,8 +678,11 @@ public final class MergeOrchestrator {
                 }
             }
 
-            // 4. Finish streaming writer — flushes + closes the c0.flashback FileChannel
-            mainWriter.finishStreaming();
+            // Close the last (or only) segment
+            String lastSegName = "c" + currentSegmentIdx + ".flashback";
+            int lastSegDuration = tickAbsEmitted - currentSegmentStart;
+            currentWriter.finishStreaming();
+            segmentDurations.put(lastSegName, lastSegDuration);
 
             // Update entity merger stats
             ctx.report.stats.entitiesMergedByUuid       = entityMerger.uuidMergedCount();
@@ -610,6 +700,8 @@ public final class MergeOrchestrator {
                 }
             }
         }
+
+        return segmentDurations;
     }
 
     /**
