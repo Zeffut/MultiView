@@ -521,6 +521,16 @@ Tag `phase-3-complete` posé.
   - **Monde vide** à l'ouverture — confirmé être la dette Phase 4 : snapshot c0.flashback écrit vide (tous les packets en live stream), Flashback a besoin d'un snapshot initialisé pour charger l'état du monde / joueur / dimension.
 - **Dette Phase 4 mise à jour** : (1) output en `.zip` au lieu de dossier, (2) snapshot non vide dans `c0.flashback` (extraire le snapshot du 1er segment du primary source).
 
+### 2026-04-20 — Phase 3 validation visuelle complète
+
+- **Fix output `.zip`** : `MergeOrchestrator` zippe maintenant le dossier tmp en `<name>.zip` (STORED pour les `.flashback` binaires, DEFLATE pour metadata/icon). Rollback inclut la suppression du zip partiel.
+- **Fix snapshot non vide** : `streamMerge` copie les actions du snapshot du 1er segment du primary source dans notre snapshot via `SegmentReader.nextRaw()` + `writeSnapshotAction()`. Les entries `inSnapshot=true` de la stream live sont filtrées pour éviter la duplication.
+- **Fix path de sortie** : `MergeCommand` utilise `Flashback.getReplayFolder()` (= `run/flashback/replays/`) au lieu de `run/replay/` (legacy) pour source et destination.
+- **Validation visuelle** : ouverture de `merged_v2.zip` dans Flashback → chargement OK, monde rempli (chunks visibles), joueurs observés, timeline de 2h30 (cohérent avec le max des 2 POV qui couvrent la même session serveur).
+- 104 tests verts. Pipeline Phase 3 validé bout-en-bout dans l'environnement MC réel.
+
+Tag `phase-3-validated` posé.
+
 ### 2026-04-19 — Phase 3 design figé
 - Brainstorming complet ([`docs/superpowers/specs/2026-04-19-phase-3-merge-design.md`](docs/superpowers/specs/2026-04-19-phase-3-merge-design.md)).
 - **Décisions clés** :
