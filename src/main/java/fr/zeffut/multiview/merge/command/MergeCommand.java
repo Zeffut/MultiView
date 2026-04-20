@@ -57,7 +57,7 @@ public final class MergeCommand {
 
     private static SuggestionProvider<FabricClientCommandSource> replayFolderSuggestions() {
         return (ctx, builder) -> {
-            Path replayRoot = MinecraftClient.getInstance().runDirectory.toPath().resolve("replay");
+            Path replayRoot = com.moulberry.flashback.Flashback.getReplayFolder();
             if (!Files.isDirectory(replayRoot)) return builder.buildFuture();
             try (Stream<Path> entries = Files.list(replayRoot)) {
                 entries.filter(Files::isDirectory)
@@ -71,7 +71,7 @@ public final class MergeCommand {
 
     private static int execute(FabricClientCommandSource source,
                                List<String> sourceNames, String outputName) {
-        Path replayRoot = MinecraftClient.getInstance().runDirectory.toPath().resolve("replay");
+        Path replayRoot = com.moulberry.flashback.Flashback.getReplayFolder();
         List<Path> sources = new ArrayList<>();
         for (String name : sourceNames) sources.add(replayRoot.resolve(name));
         Path dest = replayRoot.resolve(outputName);
