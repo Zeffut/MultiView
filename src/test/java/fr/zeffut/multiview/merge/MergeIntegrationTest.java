@@ -67,8 +67,6 @@ class MergeIntegrationTest {
                     "At least one *.flashback segment expected in zip");
             assertTrue(entries.stream().anyMatch(e -> e.startsWith("level_chunk_caches")),
                     "level_chunk_caches directory/entries expected in zip");
-            assertTrue(entries.stream().anyMatch(e -> e.startsWith("ego")),
-                    "ego directory/entries expected in zip");
 
             // Verify metadata.json content is readable and has expected total ticks
             var metaEntry = zf.getEntry("metadata.json");

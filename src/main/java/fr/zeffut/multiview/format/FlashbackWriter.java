@@ -66,7 +66,7 @@ public final class FlashbackWriter {
         }
     }
 
-    private static byte[] roundTripSegmentBytes(String name, byte[] original) {
+    private static byte[] roundTripSegmentBytes(String name, byte[] original) throws IOException {
         SegmentReader reader = new SegmentReader(name,
                 new FlashbackByteBuf(Unpooled.wrappedBuffer(original)));
         SegmentWriter writer = new SegmentWriter(name, reader.registry());

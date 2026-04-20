@@ -53,7 +53,7 @@ class SegmentRoundTripTest {
         assertTrue(segmentsTested.get() > 0, "no segment was round-tripped");
     }
 
-    private static byte[] roundTripSegment(String name, byte[] original) {
+    private static byte[] roundTripSegment(String name, byte[] original) throws java.io.IOException {
         SegmentReader reader = new SegmentReader(name,
                 new FlashbackByteBuf(Unpooled.wrappedBuffer(original)));
         SegmentWriter writer = new SegmentWriter(name, reader.registry());

@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 class SegmentWriterTest {
 
     @Test
-    void writesHeaderRegistryEmptySnapshotAndLive() {
+    void writesHeaderRegistryEmptySnapshotAndLive() throws Exception {
         SegmentWriter w = new SegmentWriter("test.flashback", List.of(ActionType.NEXT_TICK));
         w.endSnapshot();
         w.writeLiveAction(0, new byte[0]);
@@ -33,7 +33,7 @@ class SegmentWriterTest {
     }
 
     @Test
-    void snapshotActionsGoInSnapshotBlock() {
+    void snapshotActionsGoInSnapshotBlock() throws Exception {
         SegmentWriter w = new SegmentWriter("test.flashback", List.of(ActionType.NEXT_TICK));
         w.writeSnapshotAction(0, new byte[0]);
         w.writeSnapshotAction(0, new byte[0]);
@@ -52,7 +52,7 @@ class SegmentWriterTest {
     }
 
     @Test
-    void preservesPayloadBytes() {
+    void preservesPayloadBytes() throws Exception {
         byte[] payload = new byte[] { 0x0A, 0x0B, 0x0C, 0x0D };
         SegmentWriter w = new SegmentWriter("test.flashback",
                 List.of(ActionType.NEXT_TICK, ActionType.GAME_PACKET));

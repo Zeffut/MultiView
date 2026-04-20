@@ -13,7 +13,6 @@ import fr.zeffut.multiview.format.SegmentReader;
 import fr.zeffut.multiview.format.SegmentWriter;
 import fr.zeffut.multiview.format.VarInts;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 
 import java.io.IOException;
@@ -182,14 +181,10 @@ public final class MergeOrchestrator {
             }
             report.stats.chunkCachesConcatenated = nextGlobalFileIdx;
 
-            // 7. Init EgoRouter — registry from primary source's first segment (Task 16)
-            List<String> egoRegistry = extractRegistryFromFirstSegment(replays.get(primaryIdx));
-            EgoRouter egoRouter = new EgoRouter(destTmp.resolve("ego"), egoRegistry);
-
-            // 8. Stream merge (Task 16)
+            // 7. Stream merge
             progress.accept("Streaming merge...");
             streamMerge(ctx, classifier, worldMerger, entityMerger, idRemapper,
-                    egoRouter, globalDeduper, cacheRemapper, povTracker, fileOffset, destTmp, progress);
+                    globalDeduper, cacheRemapper, povTracker, fileOffset, destTmp, progress);
 
             // Step A: Write merged metadata.json
             progress.accept("Écriture metadata.json...");
@@ -368,7 +363,7 @@ public final class MergeOrchestrator {
 
     private static void streamMerge(MergeContext ctx, PacketClassifier classifier,
                                     WorldStateMerger worldMerger, EntityMerger entityMerger,
-                                    IdRemapper idRemapper, EgoRouter egoRouter,
+                                    IdRemapper idRemapper,
                                     GlobalDeduper globalDeduper, CacheRemapper cacheRemapper,
                                     SourcePovTracker povTracker, int[] fileOffset, Path destTmp,
                                     Consumer<String> progress) throws IOException {
@@ -400,6 +395,11 @@ public final class MergeOrchestrator {
         progress.accept(String.format("Transferred %d snapshot actions from primary source's first segment",
                 snapshotActionsCopied));
         mainWriter.endSnapshot();
+
+        // Open streaming file for c0.flashback — avoids accumulating the entire live stream
+        // in a single in-memory ByteBuf (which would hit Netty's Integer.MAX_VALUE array limit
+        // for long replays). Live actions are written directly to disk from this point on.
+        mainWriter.openStreamingFile(destTmp.resolve("c0.flashback"));
 
         int nextTickOrdinal    = mainRegistry.indexOf(ActionType.NEXT_TICK);
         int gamePacketOrdinal  = mainRegistry.indexOf(ActionType.GAME_PACKET);
@@ -497,11 +497,11 @@ public final class MergeOrchestrator {
                         writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case EGO -> {
-                        // Route to per-player ego segment
-                        byte[] payload = ActionType.encode(cur.head().action());
-                        UUID playerUuid = UUID.fromString(
-                                ctx.sources.get(cur.sourceIdx()).metadata().uuid());
-                        egoRouter.writeEgo(playerUuid, tickAbs, payload);
+                        // Primary only: routes HUD packets to main stream (Flashback handles natively).
+                        // Secondary EGOs dropped: they'd corrupt primary's HUD state.
+                        if (cur.sourceIdx() == ctx.primarySourceIdx) {
+                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        }
                     }
                     case GLOBAL -> {
                         if (cur.head().action() instanceof Action.GamePacket gp) {
@@ -555,20 +555,8 @@ public final class MergeOrchestrator {
                 }
             }
 
-            // 4. Finish writer and write c0.flashback
-            ByteBuf mainBytes = mainWriter.finish();
-            try {
-                Files.write(destTmp.resolve("c0.flashback"), ByteBufUtil.getBytes(mainBytes));
-            } finally {
-                mainBytes.release();
-            }
-
-            // 5. Finalize ego segments
-            egoRouter.finishAll();
-            ctx.report.stats.egoTracks = new ArrayList<>();
-            for (var uuid : egoRouter.egoPlayers()) {
-                ctx.report.stats.egoTracks.add(uuid.toString());
-            }
+            // 4. Finish streaming writer — flushes + closes the c0.flashback FileChannel
+            mainWriter.finishStreaming();
 
             // Update entity merger stats
             ctx.report.stats.entitiesMergedByUuid       = entityMerger.uuidMergedCount();
