@@ -167,8 +167,14 @@ public final class EntityPacketRewriter {
                 return rewriteSetPassengers(sourceIdx, payload);
             } else if (pid == idTakeItemEntity) {
                 return rewriteTakeItemEntity(sourceIdx, payload);
+            } else if (pid == idEntityEvent) {
+                // EntityStatusS2CPacket (ENTITY_EVENT) uses a fixed int32 (not VarInt)
+                // for the entity ID — see EntityStatusS2CPacket.readInt() / writeInt().
+                // rewriteSingleEntityId would misread it as a VarInt, producing a payload
+                // with 3 extra bytes that Flashback's handler cannot consume.
+                return rewriteEntityEventInt32(sourceIdx, payload);
             } else {
-                // All other single-entity-ID packets: binary splice
+                // All other single-entity-ID packets: binary splice (VarInt entity ID)
                 return rewriteSingleEntityId(sourceIdx, payload);
             }
         } catch (Exception e) {
@@ -475,6 +481,52 @@ public final class EntityPacketRewriter {
         return result;
     }
 
+    /**
+     * Rewrites ENTITY_EVENT (EntityStatusS2CPacket) which uses a <b>fixed int32</b>
+     * (big-endian 4 bytes) for the entity ID, unlike most entity packets that use VarInt.
+     *
+     * <p>Wire format: {@code VarInt packetId + int32 entityId + byte eventId}
+     *
+     * <p>If this packet were routed through {@link #rewriteSingleEntityId}, the VarInt
+     * reader would misinterpret the first byte of the int32 as a complete 1-byte VarInt
+     * (for entity IDs 0–127, whose first byte has the continuation bit clear).  The
+     * rewriter would then write a 4-byte global-ID VarInt in place of that 1 byte,
+     * leaving the last 3 bytes of the original int32 as unexpected trailing data.
+     * Result: payload grows by 3 bytes, and Flashback reports
+     * "Had N bytes available, only read N-3".
+     *
+     * @param sourceIdx source index
+     * @param payload   raw GamePacket bytes
+     * @return rewritten payload with remapped int32 entity ID
+     */
+    private byte[] rewriteEntityEventInt32(int sourceIdx, byte[] payload) {
+        ByteBuf in = Unpooled.wrappedBuffer(payload);
+
+        // Read packetId (VarInt, 1–5 bytes)
+        int packetIdStart = in.readerIndex();
+        readVarIntFromBuf(in);
+        int afterPid = in.readerIndex();
+
+        // Read entity ID as fixed int32 (big-endian, 4 bytes)
+        int localId = in.readInt();
+        int afterEntityId = in.readerIndex(); // = afterPid + 4
+
+        int globalId = safeRemap(sourceIdx, localId);
+
+        // Rebuild: packetId bytes + int32(globalId) + rest
+        ByteBuf out = Unpooled.buffer(payload.length);
+        out.writeBytes(payload, packetIdStart, afterPid - packetIdStart);
+        out.writeInt(globalId);
+        int remaining = payload.length - afterEntityId;
+        if (remaining > 0) {
+            out.writeBytes(payload, afterEntityId, remaining);
+        }
+
+        byte[] result = new byte[out.readableBytes()];
+        out.readBytes(result);
+        return result;
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -515,5 +567,63 @@ public final class EntityPacketRewriter {
     private static void skipResourceLocation(ByteBuf buf) {
         int len = VarInts.readVarInt(buf);
         buf.skipBytes(len);
+    }
+
+    // -------------------------------------------------------------------------
+    // Package-private static helpers — used by unit tests only
+    // -------------------------------------------------------------------------
+
+    /**
+     * Package-private static splice helper exposed for unit tests.
+     * Replaces the VarInt entity ID (second VarInt in the payload, after the packet ID)
+     * with {@code newEntityId}, preserving all other bytes.
+     *
+     * <p>This mirrors the logic of {@link #rewriteSingleEntityId} but takes the
+     * new entity ID directly, without needing an IdRemapper or Bootstrap.
+     */
+    static byte[] spliceVarIntEntityId(byte[] payload, int newEntityId) {
+        ByteBuf in = Unpooled.wrappedBuffer(payload);
+        readVarIntFromBuf(in);            // skip packetId
+        int entityIdStart = in.readerIndex();
+        VarInts.readVarInt(in);           // skip old entity ID
+        int afterEntityId = in.readerIndex();
+
+        ByteBuf out = Unpooled.buffer(payload.length + 5);
+        out.writeBytes(payload, 0, entityIdStart);
+        VarInts.writeVarInt(out, newEntityId);
+        int remaining = payload.length - afterEntityId;
+        if (remaining > 0) {
+            out.writeBytes(payload, afterEntityId, remaining);
+        }
+        byte[] result = new byte[out.readableBytes()];
+        out.readBytes(result);
+        return result;
+    }
+
+    /**
+     * Package-private static splice helper exposed for unit tests.
+     * Replaces the fixed int32 entity ID (after the packet ID VarInt) with
+     * {@code newEntityId}, preserving all other bytes.
+     *
+     * <p>This mirrors the logic of {@link #rewriteEntityEventInt32} but takes the
+     * new entity ID directly.
+     */
+    static byte[] spliceInt32EntityId(byte[] payload, int newEntityId) {
+        ByteBuf in = Unpooled.wrappedBuffer(payload);
+        readVarIntFromBuf(in);            // skip packetId
+        int afterPid = in.readerIndex();
+        in.readInt();                     // skip old int32 entity ID
+        int afterEntityId = in.readerIndex(); // = afterPid + 4
+
+        ByteBuf out = Unpooled.buffer(payload.length);
+        out.writeBytes(payload, 0, afterPid);
+        out.writeInt(newEntityId);
+        int remaining = payload.length - afterEntityId;
+        if (remaining > 0) {
+            out.writeBytes(payload, afterEntityId, remaining);
+        }
+        byte[] result = new byte[out.readableBytes()];
+        out.readBytes(result);
+        return result;
     }
 }
