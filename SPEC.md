@@ -498,6 +498,29 @@ Merge pipeline complet livré, validé par integration test sur les 2 POV HIKA r
 
 Tag `phase-3-complete` posé.
 
+### 2026-04-19 — Phase 3 validation visuelle : débloquage UI Flashback + découvertes
+
+- **Fix lattice mixin** : `lattice1219.mixins.json:MixinDropdownWidgetEntry` crashait à l'APPLY sur Yarn 1.21.11+build.4 (`@Overwrite` cherche `render(DrawContext, int, int, boolean, float)` qui n'existe plus — la signature a plus de paramètres). Fix dev-only : édition du jar Flashback local (libs/ + run/mods/, tous 2 gitignored) pour supprimer l'entrée `MixinDropdownWidgetEntry` de la mixin config. 8 autres mixins lattice restent actifs. **Aucune redistribution** du jar modifié (conforme licence Moulberry). Procédure de patch ci-dessous.
+- **Extension de fichier** : Flashback scanne `.zip` (pas `.flashback`) dans `<gameDir>/flashback/replays/`. Nos fichiers `.flashback` n'étaient pas listés. Phase 4 doit faire en sorte que `MergeOrchestrator` produise un fichier `<output>.zip`.
+- **Chemin de scan** : Flashback cherche les replays dans `<gameDir>/flashback/replays/`, pas `<gameDir>/replay/`. En dev = `run/flashback/replays/`.
+- **Patch lattice jar procedure** (à refaire à chaque upgrade Flashback) :
+  ```bash
+  # Extraire le jar imbriqué lattice
+  cd /tmp && unzip -o libs/Flashback-0.39.4-for-MC1.21.11.jar META-INF/jars/lattice-1.3.1.jar
+  # Extraire la config, retirer MixinDropdownWidgetEntry
+  cd flashback-patch/lattice && unzip -q ../META-INF/jars/lattice-1.3.1.jar
+  jq 'del(.client[] | select(. == "MixinDropdownWidgetEntry"))' lattice1219.mixins.json > tmp && mv tmp lattice1219.mixins.json
+  # Repack lattice jar + Flashback jar
+  zip -r ../META-INF/jars/lattice-1.3.1.jar .
+  cd /tmp/flashback-patch && zip -q Flashback-patched.jar META-INF/jars/lattice-1.3.1.jar
+  cp Flashback-patched.jar libs/ && cp Flashback-patched.jar run/mods/
+  ```
+- **Validation visuelle Phase 3 partielle** :
+  - Replay `.zip` reconnu et ouvrable dans Flashback UI
+  - Chargement sans crash
+  - **Monde vide** à l'ouverture — confirmé être la dette Phase 4 : snapshot c0.flashback écrit vide (tous les packets en live stream), Flashback a besoin d'un snapshot initialisé pour charger l'état du monde / joueur / dimension.
+- **Dette Phase 4 mise à jour** : (1) output en `.zip` au lieu de dossier, (2) snapshot non vide dans `c0.flashback` (extraire le snapshot du 1er segment du primary source).
+
 ### 2026-04-19 — Phase 3 design figé
 - Brainstorming complet ([`docs/superpowers/specs/2026-04-19-phase-3-merge-design.md`](docs/superpowers/specs/2026-04-19-phase-3-merge-design.md)).
 - **Décisions clés** :
