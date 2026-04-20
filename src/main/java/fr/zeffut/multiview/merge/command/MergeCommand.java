@@ -85,13 +85,14 @@ public final class MergeCommand {
                     MinecraftClient.getInstance().execute(() ->
                             source.sendFeedback(Text.literal("[MultiView] " + phase)));
                 });
+                Path destZip = dest.resolveSibling(dest.getFileName() + ".zip");
                 MinecraftClient.getInstance().execute(() ->
                         source.sendFeedback(Text.literal(String.format(
-                                "[MultiView] Done. %d entities merged, %d blocks overwritten, %d globals deduped. Report: %s",
+                                "[MultiView] Done → %s | %d entities merged, %d blocks overwritten, %d globals deduped.",
+                                destZip.toAbsolutePath(),
                                 report.stats.entitiesMergedByUuid + report.stats.entitiesMergedByHeuristic,
                                 report.stats.blocksLwwOverwrites,
-                                report.stats.globalPacketsDeduped,
-                                dest.resolve("merge-report.json").toAbsolutePath()))));
+                                report.stats.globalPacketsDeduped))));
             } catch (Throwable t) {
                 t.printStackTrace();
                 MinecraftClient.getInstance().execute(() ->

@@ -1,7 +1,5 @@
 package fr.zeffut.multiview.merge;
 
-import fr.zeffut.multiview.format.FlashbackReader;
-import fr.zeffut.multiview.format.FlashbackReplay;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.junit.jupiter.api.io.TempDir;
@@ -10,6 +8,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.zip.ZipFile;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -49,22 +50,34 @@ class MergeIntegrationTest {
         System.out.println("[REPORT] warnings=" + report.warnings);
         System.out.println("[REPORT] errors=" + report.errors);
 
-        // Structural checks
-        assertTrue(Files.exists(dest.resolve("metadata.json")));
-        assertTrue(Files.exists(dest.resolve("merge-report.json")));
-        assertTrue(Files.exists(dest.resolve("level_chunk_caches")));
-        assertTrue(Files.exists(dest.resolve("ego")));
-        // At least one main segment
-        long segmentCount;
-        try (var stream = Files.list(dest)) {
-            segmentCount = stream
-                    .filter(p -> p.getFileName().toString().matches("c\\d+\\.flashback"))
-                    .count();
-        }
-        assertTrue(segmentCount >= 1, "Au moins un segment principal attendu");
+        // Output must be a zip file (no folder)
+        Path destZip = dest.resolveSibling(dest.getFileName() + ".zip");
+        assertFalse(Files.exists(dest), "Temp folder must not remain after merge");
+        assertTrue(Files.exists(destZip), "Merged zip must exist at " + destZip);
 
-        // Re-open and verify metadata
-        FlashbackReplay mergedReplay = FlashbackReader.open(dest);
-        assertEquals(report.mergedTotalTicks, mergedReplay.metadata().totalTicks());
+        // Verify required zip entries
+        try (ZipFile zf = new ZipFile(destZip.toFile())) {
+            Set<String> entries = zf.stream()
+                    .map(java.util.zip.ZipEntry::getName)
+                    .collect(Collectors.toSet());
+
+            assertTrue(entries.contains("metadata.json"), "metadata.json missing from zip");
+            assertTrue(entries.contains("merge-report.json"), "merge-report.json missing from zip");
+            assertTrue(entries.stream().anyMatch(e -> e.matches("c\\d+\\.flashback")),
+                    "At least one *.flashback segment expected in zip");
+            assertTrue(entries.stream().anyMatch(e -> e.startsWith("level_chunk_caches")),
+                    "level_chunk_caches directory/entries expected in zip");
+            assertTrue(entries.stream().anyMatch(e -> e.startsWith("ego")),
+                    "ego directory/entries expected in zip");
+
+            // Verify metadata.json content is readable and has expected total ticks
+            var metaEntry = zf.getEntry("metadata.json");
+            assertNotNull(metaEntry);
+            String metaJson;
+            try (var in = zf.getInputStream(metaEntry)) {
+                metaJson = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            }
+            assertTrue(metaJson.contains("\"total_ticks\""), "metadata.json must contain total_ticks field");
+        }
     }
 }

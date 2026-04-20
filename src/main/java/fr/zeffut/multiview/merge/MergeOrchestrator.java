@@ -17,6 +17,7 @@ import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,6 +33,8 @@ import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 /**
  * Orchestre le merge de N replays en 1 sortie. Streaming k-way merge.
@@ -59,12 +62,14 @@ public final class MergeOrchestrator {
 
         try {
             // Check destination before opening sources
+            // The actual output is destFinal + ".zip"; destFinal is used only as base name.
             Path destFinal = options.destination();
-            if (Files.exists(destFinal)) {
+            Path destZipCheck = destFinal.resolveSibling(destFinal.getFileName() + ".zip");
+            if (Files.exists(destZipCheck)) {
                 if (options.force()) {
-                    deleteRecursively(destFinal);
+                    Files.delete(destZipCheck);
                 } else {
-                    throw new IOException("Destination already exists: " + destFinal
+                    throw new IOException("Destination already exists: " + destZipCheck
                             + ". Use --force (not yet exposed via CLI).");
                 }
             }
@@ -189,19 +194,23 @@ public final class MergeOrchestrator {
                 new GsonBuilder().setPrettyPrinting().create().toJson(report, w);
             }
 
-            // Step D: Atomic rename .tmp/ → final
-            if (Files.exists(destFinal)) {
+            // Step D: Package .tmp/ → destFinal.zip
+            Path destZip = destFinal.resolveSibling(destFinal.getFileName() + ".zip");
+            if (Files.exists(destZip)) {
                 if (options.force()) {
-                    deleteRecursively(destFinal);
+                    Files.delete(destZip);
                 } else {
-                    throw new IOException("Destination already exists: " + destFinal
+                    throw new IOException("Destination already exists: " + destZip
                             + ". Pass --force to overwrite.");
                 }
             }
-            Files.move(destTmp, destFinal);
-            destTmp = null; // successfully renamed — don't delete on catch
+            progress.accept("Packaging zip...");
+            zipDirectory(destTmp, destZip);
+            // Zip succeeded — clean up tmp dir
+            deleteRecursively(destTmp);
+            destTmp = null; // don't delete on catch
 
-            progress.accept("Merge terminé.");
+            progress.accept("Merge terminé → " + destZip.getFileName());
             return report;
 
         } catch (IOException | RuntimeException e) {
@@ -209,6 +218,12 @@ public final class MergeOrchestrator {
             if (destTmp != null && Files.exists(destTmp)) {
                 deleteRecursively(destTmp);
             }
+            // Rollback partial zip if it exists
+            Path destZip = options.destination().resolveSibling(
+                    options.destination().getFileName() + ".zip");
+            try {
+                Files.deleteIfExists(destZip);
+            } catch (IOException ignore) {}
             throw e;
         }
     }
@@ -222,6 +237,71 @@ public final class MergeOrchestrator {
                             Files.delete(p);
                         } catch (IOException ignore) {}
                     });
+        }
+    }
+
+    /**
+     * Packages the contents of {@code srcDir} into a zip archive at {@code destZip}.
+     * <p>
+     * Compression rules:
+     * <ul>
+     *   <li>{@code c0.flashback} (and any {@code *.flashback}) — STORED (already dense binary)</li>
+     *   <li>Everything else — DEFLATED</li>
+     * </ul>
+     * Internal paths are relative to {@code srcDir} (entries at zip root).
+     * Empty directories are added as entries ending with {@code /}.
+     * Files are streamed to avoid loading large binaries in memory.
+     */
+    private static void zipDirectory(Path srcDir, Path destZip) throws IOException {
+        byte[] buf = new byte[65536];
+        try (OutputStream fos = Files.newOutputStream(destZip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+
+            try (var walk = Files.walk(srcDir)) {
+                // Sort for deterministic order; directories first via natural path order
+                var paths = walk.sorted().toList();
+                for (Path p : paths) {
+                    if (p.equals(srcDir)) continue; // skip root itself
+
+                    String entryName = srcDir.relativize(p).toString().replace('\\', '/');
+                    if (Files.isDirectory(p)) {
+                        // Add directory entry (must end with '/')
+                        ZipEntry dirEntry = new ZipEntry(entryName + "/");
+                        zos.putNextEntry(dirEntry);
+                        zos.closeEntry();
+                    } else {
+                        boolean stored = entryName.endsWith(".flashback");
+                        ZipEntry entry = new ZipEntry(entryName);
+                        if (stored) {
+                            // STORED requires size + crc set upfront
+                            long size = Files.size(p);
+                            entry.setMethod(ZipEntry.STORED);
+                            entry.setSize(size);
+                            entry.setCompressedSize(size);
+                            // Compute CRC32 in a first pass
+                            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+                            try (var in = Files.newInputStream(p)) {
+                                int n;
+                                while ((n = in.read(buf)) != -1) crc.update(buf, 0, n);
+                            }
+                            entry.setCrc(crc.getValue());
+                            zos.putNextEntry(entry);
+                            try (var in = Files.newInputStream(p)) {
+                                int n;
+                                while ((n = in.read(buf)) != -1) zos.write(buf, 0, n);
+                            }
+                        } else {
+                            entry.setMethod(ZipEntry.DEFLATED);
+                            zos.putNextEntry(entry);
+                            try (var in = Files.newInputStream(p)) {
+                                int n;
+                                while ((n = in.read(buf)) != -1) zos.write(buf, 0, n);
+                            }
+                        }
+                        zos.closeEntry();
+                    }
+                }
+            }
         }
     }
 
