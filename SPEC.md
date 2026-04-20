@@ -531,6 +531,12 @@ Tag `phase-3-complete` posé.
 
 Tag `phase-3-validated` posé.
 
+### 2026-04-20 — Phase 4.A + 4.B : 2 joueurs + chunks de tous les POV
+
+- **Phase 4.A : LOCAL_PLAYER émis depuis toutes les sources** — Flashback tolère plusieurs `CreateLocalPlayer` dans le stream, les 2 POV recorders apparaissent dans Spectate Player. Fix simple : retirer le guard `if (sourceIdx == primaryIdx)` dans le dispatch LOCAL_PLAYER.
+- **Phase 4.B : CACHE_REF remap flat-entry** — `MergeOrchestrator` copie maintenant les `level_chunk_caches/` de toutes les sources, renumérotés séquentiellement (primary garde ses indices, secondaires suivent). `fileOffset[sourceIdx]` calculé à la copie et appliqué au dispatch CACHE_REF : `globalIdx = (fileOffset[i] + localIdx/10000) * 10000 + localIdx%10000`. Invariant Flashback préservé (file k = entries [k*10000, (k+1)*10000)).
+- **Validation visuelle** : merge de 2 POV → Flashback affiche les chunks des 2 zones, les 2 joueurs enregistreurs listés dans Spectate Player.
+
 ### 2026-04-19 — Phase 3 design figé
 - Brainstorming complet ([`docs/superpowers/specs/2026-04-19-phase-3-merge-design.md`](docs/superpowers/specs/2026-04-19-phase-3-merge-design.md)).
 - **Décisions clés** :
