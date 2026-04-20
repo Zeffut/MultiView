@@ -132,6 +132,8 @@ public final class MergeOrchestrator {
             SourcePovTracker povTracker = new SourcePovTracker(replays.size());
             IdRemapper idRemapper = new IdRemapper();
             EntityMerger entityMerger = new EntityMerger(povTracker, idRemapper);
+            EntityPacketRewriter entityRewriter = new EntityPacketRewriter(
+                    entityMerger, idRemapper, povTracker, replays.size());
             WorldStateMerger worldMerger = new WorldStateMerger();
             GlobalDeduper globalDeduper = new GlobalDeduper();
             CacheRemapper cacheRemapper = new CacheRemapper();
@@ -183,7 +185,7 @@ public final class MergeOrchestrator {
 
             // 7. Stream merge
             progress.accept("Streaming merge...");
-            streamMerge(ctx, classifier, worldMerger, entityMerger, idRemapper,
+            streamMerge(ctx, classifier, worldMerger, entityMerger, entityRewriter, idRemapper,
                     globalDeduper, cacheRemapper, povTracker, fileOffset, destTmp, progress);
 
             // Step A: Write merged metadata.json
@@ -363,7 +365,7 @@ public final class MergeOrchestrator {
 
     private static void streamMerge(MergeContext ctx, PacketClassifier classifier,
                                     WorldStateMerger worldMerger, EntityMerger entityMerger,
-                                    IdRemapper idRemapper,
+                                    EntityPacketRewriter entityRewriter, IdRemapper idRemapper,
                                     GlobalDeduper globalDeduper, CacheRemapper cacheRemapper,
                                     SourcePovTracker povTracker, int[] fileOffset, Path destTmp,
                                     Consumer<String> progress) throws IOException {
@@ -483,6 +485,12 @@ public final class MergeOrchestrator {
                         // (not just primary). Flashback may or may not tolerate multiple
                         // local players — test and iterate. Proper AddPlayer transform
                         // remains the fallback if this causes crashes.
+                        //
+                        // Phase 4.D: extract local player UUID from CreatePlayer payload
+                        // so EntityPacketRewriter can identify the local player entity on AddEntity.
+                        if (cur.head().action() instanceof Action.CreatePlayer cp) {
+                            entityRewriter.recordLocalPlayerUuid(cur.sourceIdx(), cp.bytes());
+                        }
                         writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case WORLD -> {
@@ -490,8 +498,22 @@ public final class MergeOrchestrator {
                         writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case ENTITY -> {
-                        // Passthrough — no entity dedup in Phase 3, deferred to Phase 4.
-                        writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        // Phase 4.D: decode entity packets, remap IDs via EntityMerger/IdRemapper.
+                        if (cur.head().action() instanceof Action.GamePacket gp) {
+                            byte[] rewritten = entityRewriter.rewrite(
+                                    cur.sourceIdx(), tickAbs, gp.bytes());
+                            if (gamePacketOrdinal >= 0) {
+                                mainWriter.writeLiveAction(gamePacketOrdinal, rewritten);
+                            }
+                        } else if (cur.head().action() instanceof Action.MoveEntities me) {
+                            // MoveEntities: update POV tracker, then passthrough.
+                            // TODO Phase 4.E: remap entity IDs within MoveEntities payload.
+                            entityRewriter.processMoveEntities(
+                                    cur.sourceIdx(), tickAbs, me.bytes());
+                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        } else {
+                            writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
+                        }
                     }
                     case PASSTHROUGH -> {
                         writeActionToMain(mainWriter, mainRegistry, cur.head().action(), ctx.report);
