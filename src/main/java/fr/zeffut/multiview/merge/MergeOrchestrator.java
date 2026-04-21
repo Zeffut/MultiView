@@ -593,47 +593,12 @@ public final class MergeOrchestrator {
                         }
                     }
                     case LOCAL_PLAYER -> {
-                        // Flashback has a SINGLE local player slot (ReplayGamePacketHandler.localPlayerId).
-                        // Emitting CreateLocalPlayer from multiple sources overwrites the slot and
-                        // breaks move propagation for both. We emit ONLY the primary source's
-                        // CreateLocalPlayer.
-                        //
-                        // For secondary sources we synthesize two packets that make the secondary
-                        // player visible as a regular entity in the primary's view:
-                        //   1. PlayerInfoUpdate(ADD_PLAYER) — registers name/skin in tab-list
-                        //   2. EntitySpawnS2CPacket         — spawns player entity at (0,0,0)
-                        // Position is corrected later when secondary PLAYER_POSITION EGO packets
-                        // are converted to TeleportEntity packets (see EGO case below).
+                        // Phase 4.A: Flashback has a SINGLE local player slot. Emit only
+                        // from primary; drop secondary CreateLocalPlayer. Secondary player
+                        // is visible as entity when observed by the primary POV.
+                        // Synthesizer experiment rolled back — regressions on primary mvt.
                         if (cur.head().action() instanceof Action.CreatePlayer cp) {
                             entityRewriter.recordLocalPlayerUuid(cur.sourceIdx(), cp.bytes());
-
-                            if (cur.sourceIdx() != ctx.primarySourceIdx
-                                    && secondarySynth.isAvailable()
-                                    && gamePacketOrdinal >= 0) {
-
-                                UUID uuid = SecondaryPlayerSynthesizer.extractUuid(cp.bytes());
-                                if (uuid != null) {
-                                    secondaryPlayerUuid[cur.sourceIdx()] = uuid;
-
-                                    // 1. PlayerInfoUpdate(ADD_PLAYER)
-                                    GameProfile profile =
-                                            SecondaryPlayerSynthesizer.extractGameProfile(cp.bytes());
-                                    byte[] playerInfoPayload =
-                                            secondarySynth.synthesizePlayerInfoUpdate(profile);
-                                    if (playerInfoPayload != null) {
-                                        currentWriter.writeLiveAction(
-                                                gamePacketOrdinal, playerInfoPayload);
-                                    }
-
-                                    // 2. EntitySpawnS2CPacket (ADD_ENTITY, PLAYER type)
-                                    byte[] addEntityPayload =
-                                            secondarySynth.synthesizeAddEntity(cur.sourceIdx(), uuid);
-                                    if (addEntityPayload != null) {
-                                        currentWriter.writeLiveAction(
-                                                gamePacketOrdinal, addEntityPayload);
-                                    }
-                                }
-                            }
                         }
                         if (cur.sourceIdx() == ctx.primarySourceIdx) {
                             writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
@@ -663,44 +628,8 @@ public final class MergeOrchestrator {
                         // This keeps the secondary player entity positioned correctly in the world.
                         if (cur.sourceIdx() == ctx.primarySourceIdx) {
                             writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
-                        } else if (cur.head().action() instanceof Action.GamePacket gp
-                                && idPlayerPosition >= 0
-                                && PacketClassifier.readPacketId(gp.bytes()) == idPlayerPosition
-                                && secondarySynth.isAvailable()
-                                && gamePacketOrdinal >= 0) {
-
-                            // Secondary PLAYER_POSITION → synthesize TeleportEntity for the fake player
-                            int fakeEntityId = secondarySynth.getFakeEntityId(cur.sourceIdx());
-                            if (fakeEntityId >= 0) {
-                                try {
-                                    // Decode PLAYER_POSITION to extract absolute position
-                                    // Wire format: VarInt packetId + CODEC body (PacketByteBuf)
-                                    byte[] payload = gp.bytes();
-                                    ByteBuf raw = Unpooled.wrappedBuffer(payload);
-                                    VarInts.readVarInt(raw); // skip packetId
-                                    PacketByteBuf packetBuf = new PacketByteBuf(raw);
-                                    PlayerPositionLookS2CPacket posPacket =
-                                            PlayerPositionLookS2CPacket.CODEC.decode(packetBuf);
-
-                                    double x = posPacket.change().position().x;
-                                    double y = posPacket.change().position().y;
-                                    double z = posPacket.change().position().z;
-                                    float yaw   = posPacket.change().yaw();
-                                    float pitch = posPacket.change().pitch();
-
-                                    byte[] teleportPayload = secondarySynth.synthesizeTeleport(
-                                            fakeEntityId, x, y, z, yaw, pitch);
-                                    if (teleportPayload != null) {
-                                        currentWriter.writeLiveAction(
-                                                gamePacketOrdinal, teleportPayload);
-                                    }
-                                } catch (Throwable t) {
-                                    LOG.warning("MergeOrchestrator: failed to translate "
-                                            + "PLAYER_POSITION to TeleportEntity for source "
-                                            + cur.sourceIdx() + ": " + t.getMessage());
-                                }
-                            }
                         }
+                        // Secondary EGO packets dropped entirely (Phase 4.A baseline).
                     }
                     case GLOBAL -> {
                         if (cur.head().action() instanceof Action.GamePacket gp) {

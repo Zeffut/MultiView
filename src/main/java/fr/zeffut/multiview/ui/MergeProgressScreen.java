@@ -120,14 +120,19 @@ public class MergeProgressScreen extends Screen {
         int centerX = this.width / 2;
         int centerY = this.height / 2;
 
-        // Title
+        // Progress bar geometry — phase text sits 14px above it
+        int barW = 300;
+        int barH = 14;
+        int barY = centerY + 10;
+        int phaseY = barY - 14;
+
+        // Title (well above phase text)
         context.drawCenteredTextWithShadow(this.textRenderer,
                 Text.translatable("multiview.merge_progress.title"),
-                centerX, centerY - 50, 0xFFFFFF);
+                centerX, phaseY - 28, 0xFFFFFF);
 
-        // Phase text with animated dots — placed just above the progress bar.
+        // Phase text with animated dots
         String phase = currentPhase.get();
-        int phaseY = centerY - 10;
         if (errorMessage != null) {
             context.drawCenteredTextWithShadow(this.textRenderer,
                     Text.literal("§c" + errorMessage),
@@ -146,10 +151,7 @@ public class MergeProgressScreen extends Screen {
 
         // Progress bar
         if (errorMessage == null && !done) {
-            int barW = 300;
-            int barH = 14;
             int barX = centerX - barW / 2;
-            int barY = centerY + 10;
             // Border
             context.fill(barX - 1, barY - 1, barX + barW + 1, barY + barH + 1, 0xFFFFFFFF);
             // Background

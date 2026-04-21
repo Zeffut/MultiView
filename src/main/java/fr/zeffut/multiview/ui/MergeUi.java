@@ -162,7 +162,7 @@ public final class MergeUi {
             // Skip entries that are fully outside the visible area
             if (rowBottom < list.getY() || rowTop > list.getBottom()) continue;
 
-            int cbX = list.getRowLeft() + CB_INSET_X;
+            int cbX = list.getRowLeft() + list.getRowWidth() - CB_SIZE - CB_INSET_X;
             int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
 
             boolean checked = state.checkedPaths.contains(summary.getPath());
@@ -224,7 +224,7 @@ public final class MergeUi {
             // Skip entries outside the visible clip area
             if (rowBottom < list.getY() || rowTop > list.getBottom()) continue;
 
-            int cbX = list.getRowLeft() + CB_INSET_X;
+            int cbX = list.getRowLeft() + list.getRowWidth() - CB_SIZE - CB_INSET_X;
             int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
 
             if (mouseX >= cbX - 1 && mouseX <= cbX + CB_SIZE + 1
