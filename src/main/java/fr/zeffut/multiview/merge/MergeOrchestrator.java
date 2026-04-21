@@ -570,17 +570,17 @@ public final class MergeOrchestrator {
                         }
                     }
                     case LOCAL_PLAYER -> {
-                        // Phase 4.A experimental: emit CreateLocalPlayer from ALL sources
-                        // (not just primary). Flashback may or may not tolerate multiple
-                        // local players — test and iterate. Proper AddPlayer transform
-                        // remains the fallback if this causes crashes.
-                        //
-                        // Phase 4.D: extract local player UUID from CreatePlayer payload
-                        // so EntityPacketRewriter can identify the local player entity on AddEntity.
+                        // Flashback has a SINGLE local player slot (ReplayGamePacketHandler.localPlayerId).
+                        // Emitting CreateLocalPlayer from multiple sources overwrites the slot and
+                        // breaks move propagation for both. We emit ONLY the primary source's
+                        // CreateLocalPlayer. Secondary players are still visible via AddEntity
+                        // (emitted when the primary POV observes them) — see Phase 4.A debt.
                         if (cur.head().action() instanceof Action.CreatePlayer cp) {
                             entityRewriter.recordLocalPlayerUuid(cur.sourceIdx(), cp.bytes());
                         }
-                        writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                        if (cur.sourceIdx() == ctx.primarySourceIdx) {
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                        }
                     }
                     case WORLD -> {
                         // Phase 4.E rollback: passthrough. The LWW decode path was causing
