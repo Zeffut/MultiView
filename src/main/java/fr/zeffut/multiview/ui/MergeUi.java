@@ -9,14 +9,13 @@ import fr.zeffut.multiview.MultiViewMod;
 import fr.zeffut.multiview.merge.MergeOptions;
 import fr.zeffut.multiview.merge.MergeOrchestrator;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents;
 import net.fabricmc.fabric.api.client.screen.v1.Screens;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.client.util.InputUtil;
-import net.minecraft.client.util.Window;
 import net.minecraft.text.Text;
-import org.lwjgl.glfw.GLFW;
 
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -25,31 +24,31 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Integrates a multi-select merge UI into Flashback's {@code SelectReplayScreen}.
+ * Integrates a per-replay checkbox merge UI into Flashback's {@code SelectReplayScreen}.
  * <p>
- * Uses Fabric's {@link ScreenEvents#AFTER_INIT} to inject buttons without
- * modifying Flashback sources or using mixins.
+ * Uses Fabric's {@link ScreenEvents#AFTER_INIT} to inject a "Merge N Replays" button
+ * and register after-render / mouse-click hooks without modifying Flashback sources.
  *
- * <h2>UX Flow (Option 1 — explicit toggle)</h2>
+ * <h2>UX Flow</h2>
  * <ol>
- *   <li>A "Multi-select" toggle button is added at the bottom of the screen.</li>
- *   <li>When toggled on, a per-screen {@link SelectionState} is created and attached.</li>
- *   <li>Shift-click on a replay entry adds it to the selection set.</li>
- *   <li>A "Merge Selected" button is enabled once ≥ 2 replays are selected.</li>
- *   <li>Clicking "Merge Selected" opens {@link MergeProgressScreen} and starts the merge.</li>
+ *   <li>Every replay row shows a small checkbox at its leftmost edge.</li>
+ *   <li>Clicking the checkbox toggles selection independently of single-replay
+ *       actions (Open / Edit / Delete).</li>
+ *   <li>A "Merge N Replays" button in the top-right is enabled when ≥ 2 boxes are checked.</li>
+ *   <li>Clicking "Merge N Replays" opens {@link MergeProgressScreen} and starts the merge.</li>
  * </ol>
  *
- * <h2>Selection mechanism</h2>
- * Fabric's {@link ScreenEvents#afterTick} hook is used to poll Flashback's
- * {@link ReplaySelectionList#getReplayListEntry()} on each tick while multi-select mode
- * is active. When a new entry is "touched" (its summary differs from the last seen
- * selection), we add it to our set if shift is held, or start a new set if not.
- * <p>
- * This polling approach avoids any mixin into Flashback's entry class.
+ * <h2>Checkbox rendering</h2>
+ * Rendered via {@link ScreenEvents#afterRender} — no mixin required.
+ *
+ * <h2>Click interception</h2>
+ * {@link ScreenMouseEvents#allowMouseClick} returns {@code false} when the click
+ * lands on a checkbox rectangle, so Flashback's row selection is left undisturbed.
  */
 public final class MergeUi {
 
@@ -61,6 +60,11 @@ public final class MergeUi {
 
     private static final DateTimeFormatter TS_FMT =
             DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
+
+    /** Width/height of each checkbox square (pixels, in GUI scale). */
+    private static final int CB_SIZE = 10;
+    /** Horizontal inset from the row's left edge. */
+    private static final int CB_INSET_X = 2;
 
     private MergeUi() {}
 
@@ -74,7 +78,7 @@ public final class MergeUi {
      */
     public static void register() {
         ScreenEvents.AFTER_INIT.register(MergeUi::onAfterInit);
-        MultiViewMod.LOGGER.info("[MultiView] MergeUi registered (Phase 5).");
+        MultiViewMod.LOGGER.info("[MultiView] MergeUi registered (Phase 5 — per-replay checkboxes).");
     }
 
     // -------------------------------------------------------------------------
@@ -86,14 +90,13 @@ public final class MergeUi {
      * Created when the screen is initialised and discarded when it closes.
      */
     private static final class SelectionState {
-        /** Replays currently in the multi-select set (insertion order). */
-        final LinkedHashSet<ReplaySummary> selected = new LinkedHashSet<>();
-        /** Whether multi-select mode is currently active. */
-        boolean multiSelectOn = false;
-        /** The last summary returned by getReplayListEntry() on the previous tick. */
-        ReplaySummary lastSeen = null;
+        /**
+         * Replay paths that are currently checked (by the user via checkbox).
+         * Using Path as key because ReplaySummary doesn't override equals/hashCode
+         * in a stable way across list reloads.
+         */
+        final Set<Path> checkedPaths = new LinkedHashSet<>();
 
-        ButtonWidget toggleButton = null;
         ButtonWidget mergeButton = null;
     }
 
@@ -107,28 +110,11 @@ public final class MergeUi {
         SelectionState state = new SelectionState();
 
         // --- Layout constants ------------------------------------------------
-        // Place our buttons in the top-right corner of the screen, out of the way
-        // of Flashback's native title/search/sort row (top-left) and its
-        // Open/Edit/Delete/Back button rows (bottom).
         int btnH = 20;
-        int toggleW = 110;
-        int mergeW = 120;
-        int gap = 4;
+        int mergeW = 130;
         int margin = 4;
-
-        int btnY = margin;
-        // Two stacked rows on the right: toggle on top, merge below.
-        int startX = scaledWidth - toggleW - margin;
         int mergeX = scaledWidth - mergeW - margin;
-        int mergeY = btnY + btnH + gap;
-
-        // Toggle button
-        ButtonWidget toggleBtn = ButtonWidget.builder(
-                        Text.translatable("multiview.button.multiselect"),
-                        btn -> toggleMultiSelect(state, btn, srs))
-                .dimensions(startX, btnY, toggleW, btnH)
-                .build();
-        state.toggleButton = toggleBtn;
+        int mergeY = margin;
 
         // Merge button — initially disabled
         ButtonWidget mergeBtn = ButtonWidget.builder(
@@ -139,96 +125,138 @@ public final class MergeUi {
         mergeBtn.active = false;
         state.mergeButton = mergeBtn;
 
-        Screens.getButtons(screen).add(toggleBtn);
         Screens.getButtons(screen).add(mergeBtn);
 
-        // Poll for selection changes after each tick
-        ScreenEvents.afterTick(screen).register(s -> onTick(state, srs));
+        // Draw checkboxes after the screen has rendered its normal content
+        ScreenEvents.afterRender(screen).register((s, context, mouseX, mouseY, delta) ->
+                drawCheckboxes(state, srs, context, mouseX, mouseY));
+
+        // Intercept mouse clicks on checkboxes
+        ScreenMouseEvents.allowMouseClick(screen).register((s, clickContext) ->
+                handleMouseClick(state, srs, clickContext.x(), clickContext.y(), clickContext.button()));
 
         // Clean up when the screen is removed
-        ScreenEvents.remove(screen).register(s -> {
-            state.selected.clear();
-            state.multiSelectOn = false;
-        });
+        ScreenEvents.remove(screen).register(s -> state.checkedPaths.clear());
     }
 
     // -------------------------------------------------------------------------
-    // Toggle multi-select mode
+    // Checkbox rendering
     // -------------------------------------------------------------------------
 
-    private static void toggleMultiSelect(SelectionState state, ButtonWidget btn, SelectReplayScreen screen) {
-        state.multiSelectOn = !state.multiSelectOn;
-        if (!state.multiSelectOn) {
-            // Clear selection when disabling
-            state.selected.clear();
-            state.lastSeen = null;
-            updateMergeButton(state);
-            btn.setMessage(Text.translatable("multiview.button.multiselect"));
-        } else {
-            btn.setMessage(Text.translatable("multiview.button.multiselect.on"));
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Per-tick polling for selection
-    // -------------------------------------------------------------------------
-
-    private static void onTick(SelectionState state, SelectReplayScreen screen) {
-        if (!state.multiSelectOn) return;
-
-        // Access the ReplaySelectionList via the public field
-        ReplaySelectionList list = getSelectionList(screen);
+    private static void drawCheckboxes(SelectionState state, SelectReplayScreen srs,
+                                        DrawContext context, int mouseX, int mouseY) {
+        ReplaySelectionList list = getSelectionList(srs);
         if (list == null) return;
 
-        ReplaySelectionEntry.ReplayListEntry entry = list.getReplayListEntry();
-        if (entry == null) return;
+        List<ReplaySelectionEntry> children = list.children();
+        for (int i = 0; i < children.size(); i++) {
+            ReplaySelectionEntry entry = children.get(i);
+            if (!(entry instanceof ReplaySelectionEntry.ReplayListEntry rle)) continue;
 
-        ReplaySummary summary = getSummaryFromEntry(entry);
-        if (summary == null) return;
+            ReplaySummary summary = getSummaryFromEntry(rle);
+            if (summary == null) continue;
 
-        // Detect a newly selected entry (different from what we saw last tick)
-        if (summary != state.lastSeen) {
-            state.lastSeen = summary;
-            handleEntrySelected(state, summary, screen);
-            updateMergeButton(state);
+            int rowTop = list.getRowTop(i);
+            int rowBottom = list.getRowBottom(i);
+
+            // Skip entries that are fully outside the visible area
+            if (rowBottom < list.getY() || rowTop > list.getBottom()) continue;
+
+            int cbX = list.getRowLeft() + CB_INSET_X;
+            int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
+
+            boolean checked = state.checkedPaths.contains(summary.getPath());
+            boolean hovered = mouseX >= cbX && mouseX <= cbX + CB_SIZE
+                    && mouseY >= cbY && mouseY <= cbY + CB_SIZE;
+
+            drawCheckbox(context, cbX, cbY, checked, hovered);
         }
     }
 
     /**
-     * Called when the user selects a replay entry in Flashback's list while
-     * multi-select mode is active.
-     * <p>
-     * If Shift is held: add to set (toggle — add if absent, remove if present).
-     * Otherwise: replace the selection set with just this entry.
+     * Draws a single checkbox square at (x, y) with size {@link #CB_SIZE}.
+     * <ul>
+     *   <li>Checked: solid green fill with white border.</li>
+     *   <li>Unchecked: dark fill with white border; lighter border on hover.</li>
+     * </ul>
      */
-    private static void handleEntrySelected(SelectionState state, ReplaySummary summary,
-                                             SelectReplayScreen screen) {
-        boolean shiftHeld = isShiftHeld();
-        if (shiftHeld) {
-            // Toggle
-            if (state.selected.contains(summary)) {
-                state.selected.remove(summary);
-            } else {
-                state.selected.add(summary);
-            }
+    private static void drawCheckbox(DrawContext context, int x, int y, boolean checked, boolean hovered) {
+        // Border
+        int borderColor = hovered ? 0xFFFFFFFF : 0xFFAAAAAA;
+        context.fill(x - 1, y - 1, x + CB_SIZE + 1, y + CB_SIZE + 1, borderColor);
+
+        if (checked) {
+            // Green fill
+            context.fill(x, y, x + CB_SIZE, y + CB_SIZE, 0xFF4CAF50);
+            // Small check mark — two small bright rectangles forming a tick
+            context.fill(x + 1, y + CB_SIZE / 2, x + CB_SIZE / 3 + 1, y + CB_SIZE - 1, 0xFFFFFFFF);
+            context.fill(x + CB_SIZE / 3, y + CB_SIZE / 3, x + CB_SIZE - 1, y + CB_SIZE / 2 + 1, 0xFFFFFFFF);
         } else {
-            // Single click: start fresh selection with this entry
-            state.selected.clear();
-            state.selected.add(summary);
+            // Dark grey fill
+            context.fill(x, y, x + CB_SIZE, y + CB_SIZE, 0xFF2A2A2A);
         }
     }
 
     // -------------------------------------------------------------------------
-    // Merge button visibility
+    // Mouse click interception
+    // -------------------------------------------------------------------------
+
+    /**
+     * Called by {@code ScreenMouseEvents.allowMouseClick}. Returns {@code false}
+     * (blocking the event) when the click hits a checkbox, toggling its state.
+     * Returns {@code true} to allow normal Flashback handling otherwise.
+     */
+    private static boolean handleMouseClick(SelectionState state, SelectReplayScreen srs,
+                                             double mouseX, double mouseY, int button) {
+        if (button != 0) return true; // only left-click
+
+        ReplaySelectionList list = getSelectionList(srs);
+        if (list == null) return true;
+
+        List<ReplaySelectionEntry> children = list.children();
+        for (int i = 0; i < children.size(); i++) {
+            ReplaySelectionEntry entry = children.get(i);
+            if (!(entry instanceof ReplaySelectionEntry.ReplayListEntry rle)) continue;
+
+            int rowTop = list.getRowTop(i);
+            int rowBottom = list.getRowBottom(i);
+
+            // Skip entries outside the visible clip area
+            if (rowBottom < list.getY() || rowTop > list.getBottom()) continue;
+
+            int cbX = list.getRowLeft() + CB_INSET_X;
+            int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
+
+            if (mouseX >= cbX - 1 && mouseX <= cbX + CB_SIZE + 1
+                    && mouseY >= cbY - 1 && mouseY <= cbY + CB_SIZE + 1) {
+                // Hit! Toggle this entry
+                ReplaySummary summary = getSummaryFromEntry(rle);
+                if (summary == null) return true;
+
+                Path path = summary.getPath();
+                if (state.checkedPaths.contains(path)) {
+                    state.checkedPaths.remove(path);
+                } else {
+                    state.checkedPaths.add(path);
+                }
+                updateMergeButton(state);
+                return false; // consume — don't pass to Flashback row selection
+            }
+        }
+        return true; // not on a checkbox, allow normal handling
+    }
+
+    // -------------------------------------------------------------------------
+    // Merge button
     // -------------------------------------------------------------------------
 
     private static void updateMergeButton(SelectionState state) {
         if (state.mergeButton == null) return;
-        state.mergeButton.active = state.multiSelectOn && state.selected.size() >= 2;
-        // Update label to show count
-        if (state.selected.size() >= 2) {
+        int n = state.checkedPaths.size();
+        state.mergeButton.active = n >= 2;
+        if (n >= 2) {
             state.mergeButton.setMessage(
-                    Text.translatable("multiview.button.merge_selected.count", state.selected.size()));
+                    Text.translatable("multiview.button.merge_selected.count", n));
         } else {
             state.mergeButton.setMessage(Text.translatable("multiview.button.merge_selected"));
         }
@@ -240,20 +268,15 @@ public final class MergeUi {
 
     private static void startMerge(SelectionState state, SelectReplayScreen parentScreen,
                                    MinecraftClient client) {
-        if (state.selected.size() < 2) return;
+        if (state.checkedPaths.size() < 2) return;
 
-        List<ReplaySummary> toMerge = new ArrayList<>(state.selected);
-
-        // Build source paths — ReplaySummary.getPath() gives the replay folder/zip
-        List<Path> sourcePaths = new ArrayList<>();
-        for (ReplaySummary rs : toMerge) {
-            sourcePaths.add(rs.getPath());
-        }
+        List<Path> sourcePaths = new ArrayList<>(state.checkedPaths);
 
         // Output name: first source name + timestamp
-        String firstName = toMerge.get(0).getReplayName();
-        if (firstName == null || firstName.isBlank()) {
-            firstName = toMerge.get(0).getPath().getFileName().toString();
+        String firstName = sourcePaths.get(0).getFileName().toString();
+        // Strip zip extension if present
+        if (firstName.endsWith(".zip")) {
+            firstName = firstName.substring(0, firstName.length() - 4);
         }
         String ts = LocalDateTime.now().format(TS_FMT);
         String outputName = sanitizeName(firstName) + "_merged_" + ts;
@@ -268,13 +291,10 @@ public final class MergeUi {
         client.setScreen(progressScreen);
 
         // Reset state
-        state.selected.clear();
-        state.multiSelectOn = false;
-        if (state.toggleButton != null) {
-            state.toggleButton.setMessage(Text.translatable("multiview.button.multiselect"));
-        }
+        state.checkedPaths.clear();
         if (state.mergeButton != null) {
             state.mergeButton.active = false;
+            state.mergeButton.setMessage(Text.translatable("multiview.button.merge_selected"));
         }
 
         // Run merge in background
@@ -299,7 +319,7 @@ public final class MergeUi {
      * Retrieves the {@link ReplaySelectionList} from a {@link SelectReplayScreen}
      * via reflection (the field is private in Flashback).
      */
-    private static ReplaySelectionList getSelectionList(SelectReplayScreen screen) {
+    static ReplaySelectionList getSelectionList(SelectReplayScreen screen) {
         try {
             java.lang.reflect.Field f = SelectReplayScreen.class.getDeclaredField("list");
             f.setAccessible(true);
@@ -323,19 +343,6 @@ public final class MergeUi {
             MultiViewMod.LOGGER.debug("[MultiView] Could not read summary field: {}", e.getMessage());
             return null;
         }
-    }
-
-    /**
-     * Returns {@code true} if either Shift key is currently held.
-     * Uses LWJGL GLFW directly since MC 1.21 removed {@code Screen.hasShiftDown()}.
-     */
-    private static boolean isShiftHeld() {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null) return false;
-        Window window = mc.getWindow();
-        if (window == null) return false;
-        return InputUtil.isKeyPressed(window, GLFW.GLFW_KEY_LEFT_SHIFT)
-                || InputUtil.isKeyPressed(window, GLFW.GLFW_KEY_RIGHT_SHIFT);
     }
 
     /**

@@ -1,5 +1,8 @@
 package fr.zeffut.multiview.ui;
 
+import com.moulberry.flashback.screen.select_replay.ReplaySelectionList;
+import com.moulberry.flashback.screen.select_replay.SelectReplayScreen;
+import fr.zeffut.multiview.MultiViewMod;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
@@ -91,12 +94,12 @@ public class MergeProgressScreen extends Screen {
     public void tick() {
         tickCount++;
         if (done && this.client != null) {
-            // Refresh the replay list by reopening the select screen
-            if (this.previousScreen != null) {
-                this.client.setScreen(this.previousScreen);
-            } else {
-                this.client.setScreen(null);
+            // Reload the replay list so the newly-created merge zip is visible immediately
+            if (this.previousScreen instanceof SelectReplayScreen srs) {
+                reloadReplayList(srs);
             }
+            // Return to the select-replay screen (or null if there was none)
+            this.client.setScreen(this.previousScreen);
         }
         // Activate back button once done or errored
         if ((done || errorMessage != null) && this.children() != null) {
@@ -124,7 +127,7 @@ public class MergeProgressScreen extends Screen {
 
         // Phase text with animated dots — placed just above the progress bar.
         String phase = currentPhase.get();
-        int phaseY = centerY - 4;
+        int phaseY = centerY - 10;
         if (errorMessage != null) {
             context.drawCenteredTextWithShadow(this.textRenderer,
                     Text.literal("§c" + errorMessage),
@@ -170,5 +173,28 @@ public class MergeProgressScreen extends Screen {
     public boolean shouldCloseOnEsc() {
         // Prevent accidental close during merge
         return done || errorMessage != null;
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Triggers Flashback's replay-list refresh on the given {@link SelectReplayScreen}
+     * so the newly-created merge zip appears immediately without a manual Back + re-enter.
+     * <p>
+     * {@code ReplaySelectionList.reloadReplayList()} is public, but the {@code list}
+     * field on {@link SelectReplayScreen} is private — accessed via reflection.
+     */
+    private static void reloadReplayList(SelectReplayScreen srs) {
+        try {
+            ReplaySelectionList list = MergeUi.getSelectionList(srs);
+            if (list != null) {
+                list.reloadReplayList();
+                MultiViewMod.LOGGER.debug("[MultiView] Triggered reloadReplayList() on SelectReplayScreen.");
+            }
+        } catch (Throwable t) {
+            MultiViewMod.LOGGER.warn("[MultiView] Could not reload replay list: {}", t.getMessage());
+        }
     }
 }
