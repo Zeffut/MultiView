@@ -120,33 +120,37 @@ public class MergeProgressScreen extends Screen {
         int centerX = this.width / 2;
         int centerY = this.height / 2;
 
-        // Progress bar geometry — phase text sits 14px above it
+        // Layout (vertically stacked, centered):
+        //   Title       — centerY - 40
+        //   Phase text  — centerY - 15
+        //   Progress bar— centerY + 5
+        //   Percentage  — centerY + 25
         int barW = 300;
         int barH = 14;
-        int barY = centerY + 10;
-        int phaseY = barY - 14;
+        int barY = centerY + 5;
 
-        // Title (well above phase text)
+        // Title
         context.drawCenteredTextWithShadow(this.textRenderer,
                 Text.translatable("multiview.merge_progress.title"),
-                centerX, phaseY - 28, 0xFFFFFF);
+                centerX, centerY - 40, 0xFFFFFF);
 
-        // Phase text with animated dots
+        // Phase text with animated dots — dedicated row with its own background
         String phase = currentPhase.get();
+        int phaseY = centerY - 15;
         if (errorMessage != null) {
             context.drawCenteredTextWithShadow(this.textRenderer,
-                    Text.literal("§c" + errorMessage),
-                    centerX, phaseY, 0xFF5555);
+                    Text.literal(errorMessage),
+                    centerX, phaseY, 0xFFFF5555);
         } else if (done) {
             context.drawCenteredTextWithShadow(this.textRenderer,
                     Text.translatable("multiview.merge_progress.done"),
-                    centerX, phaseY, 0x55FF55);
+                    centerX, phaseY, 0xFF55FF55);
         } else {
             int dots = (tickCount / 10) % 4;
-            String dotStr = ".".repeat(dots);
+            String dotStr = ".".repeat(dots) + " ".repeat(3 - dots);
             context.drawCenteredTextWithShadow(this.textRenderer,
                     Text.literal(phase + dotStr),
-                    centerX, phaseY, 0xFFFFFF);
+                    centerX, phaseY, 0xFFCCCCCC);
         }
 
         // Progress bar

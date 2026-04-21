@@ -269,14 +269,10 @@ public final class MergeUi {
 
         List<Path> sourcePaths = new ArrayList<>(state.checkedPaths);
 
-        // Output name: first source name + timestamp
-        String firstName = sourcePaths.get(0).getFileName().toString();
-        // Strip zip extension if present
-        if (firstName.endsWith(".zip")) {
-            firstName = firstName.substring(0, firstName.length() - 4);
-        }
+        // Output name: "merged_" + short timestamp. Keeps the filename concise
+        // regardless of source names — users can rename the zip afterward.
         String ts = LocalDateTime.now().format(TS_FMT);
-        String outputName = sanitizeName(firstName) + "_merged_" + ts;
+        String outputName = "merged_" + ts;
 
         Path replayRoot = Flashback.getReplayFolder();
         Path destPath = replayRoot.resolve(outputName);
@@ -342,12 +338,4 @@ public final class MergeUi {
         }
     }
 
-    /**
-     * Strips characters that are unsafe for file names, replacing them with '_'.
-     */
-    private static String sanitizeName(String name) {
-        return name.replaceAll("[\\\\/:*?\"<>|]", "_")
-                   .replaceAll("\\s+", "_")
-                   .replaceAll("_{2,}", "_");
-    }
 }
