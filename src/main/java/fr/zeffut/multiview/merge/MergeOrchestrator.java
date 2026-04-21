@@ -440,6 +440,13 @@ public final class MergeOrchestrator {
     /** Number of ticks per output segment (~5 min of gameplay at 20 ticks/s). */
     private static final int SEGMENT_TICKS = 6000;
 
+    /** CRC32C content hash for dedup comparisons. */
+    private static long contentHash(byte[] payload) {
+        java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
+        crc.update(payload, 0, payload.length);
+        return crc.getValue();
+    }
+
     /**
      * Performs the streaming k-way merge and writes cN.flashback segment files to destTmp.
      *
@@ -509,14 +516,19 @@ public final class MergeOrchestrator {
         int idPlayerPosition = -1;
         int idForgetLevelChunk = -1;
         int idRemoveEntities = -1;
+        int idLevelChunkWithLight = -1;
         try {
             idPlayerPosition = GamePacketDispatch.findId(PlayPackets.PLAYER_POSITION);
             idForgetLevelChunk = GamePacketDispatch.findId(PlayPackets.FORGET_LEVEL_CHUNK);
             idRemoveEntities = GamePacketDispatch.findId(PlayPackets.REMOVE_ENTITIES);
+            idLevelChunkWithLight = GamePacketDispatch.findId(PlayPackets.LEVEL_CHUNK_WITH_LIGHT);
         } catch (Throwable t) {
             LOG.warning("MergeOrchestrator: could not resolve special packet ids: "
                     + t.getClass().getSimpleName());
         }
+        // Track which chunks have already been emitted, keyed by content hash.
+        // Prevents multiple POVs from overwriting the same chunk state on playback.
+        java.util.Set<Long> emittedChunkHashes = new java.util.HashSet<>();
 
         // 2. One cursor per source, priority-queue ordered by (tickAbs, sourceIdx)
         record SourceCursor(int sourceIdx, Iterator<PacketEntry> it, PacketEntry head) {}
@@ -644,16 +656,29 @@ public final class MergeOrchestrator {
                         }
                     }
                     case WORLD -> {
-                        // Passthrough with one filter: FORGET_LEVEL_CHUNK (chunk unload)
-                        // from secondary sources is dropped. With N POVs, each source unloads
-                        // chunks its local player leaves → the merged stream would cascade
-                        // unloads, flickering chunks in zones other POVs still cover.
-                        // Primary's unloads are kept (it's the camera source).
-                        if (cur.sourceIdx() != ctx.primarySourceIdx
-                                && cur.head().action() instanceof Action.GamePacket gp
-                                && idForgetLevelChunk >= 0
-                                && PacketClassifier.readPacketId(gp.bytes()) == idForgetLevelChunk) {
-                            // drop
+                        // Filters applied:
+                        //   1. FORGET_LEVEL_CHUNK from secondary: drop (primary-only).
+                        //   2. LEVEL_CHUNK_WITH_LIGHT: dedup by content hash across all
+                        //      sources — avoids multiple POVs overwriting the same chunk
+                        //      with competing states.
+                        if (cur.head().action() instanceof Action.GamePacket gp) {
+                            int pid = PacketClassifier.readPacketId(gp.bytes());
+                            if (cur.sourceIdx() != ctx.primarySourceIdx
+                                    && idForgetLevelChunk >= 0
+                                    && pid == idForgetLevelChunk) {
+                                // drop secondary unload
+                            } else if (idLevelChunkWithLight >= 0
+                                    && pid == idLevelChunkWithLight) {
+                                long hash = contentHash(gp.bytes());
+                                if (emittedChunkHashes.add(hash)) {
+                                    writeActionToMain(currentWriter, mainRegistry,
+                                            cur.head().action(), ctx.report);
+                                }
+                                // else drop duplicate chunk from another source
+                            } else {
+                                writeActionToMain(currentWriter, mainRegistry,
+                                        cur.head().action(), ctx.report);
+                            }
                         } else {
                             writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         }
