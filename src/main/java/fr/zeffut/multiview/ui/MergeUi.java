@@ -186,11 +186,8 @@ public final class MergeUi {
         context.fill(x - 1, y - 1, x + CB_SIZE + 1, y + CB_SIZE + 1, borderColor);
 
         if (checked) {
-            // Green fill
+            // Solid green fill — no check mark overlay (cleaner)
             context.fill(x, y, x + CB_SIZE, y + CB_SIZE, 0xFF4CAF50);
-            // Small check mark — two small bright rectangles forming a tick
-            context.fill(x + 1, y + CB_SIZE / 2, x + CB_SIZE / 3 + 1, y + CB_SIZE - 1, 0xFFFFFFFF);
-            context.fill(x + CB_SIZE / 3, y + CB_SIZE / 3, x + CB_SIZE - 1, y + CB_SIZE / 2 + 1, 0xFFFFFFFF);
         } else {
             // Dark grey fill
             context.fill(x, y, x + CB_SIZE, y + CB_SIZE, 0xFF2A2A2A);
