@@ -122,24 +122,23 @@ public class MergeProgressScreen extends Screen {
                 Text.translatable("multiview.merge_progress.title"),
                 centerX, centerY - 50, 0xFFFFFF);
 
-        // Phase text with animated dots
+        // Phase text with animated dots — placed just above the progress bar.
         String phase = currentPhase.get();
+        int phaseY = centerY - 4;
         if (errorMessage != null) {
-            // Show error in red
             context.drawCenteredTextWithShadow(this.textRenderer,
                     Text.literal("§c" + errorMessage),
-                    centerX, centerY - 20, 0xFF5555);
+                    centerX, phaseY, 0xFF5555);
         } else if (done) {
             context.drawCenteredTextWithShadow(this.textRenderer,
                     Text.translatable("multiview.merge_progress.done"),
-                    centerX, centerY - 20, 0x55FF55);
+                    centerX, phaseY, 0x55FF55);
         } else {
-            // Animated dots: 0, 1, 2, 3 dots cycling every 10 ticks
             int dots = (tickCount / 10) % 4;
             String dotStr = ".".repeat(dots);
             context.drawCenteredTextWithShadow(this.textRenderer,
                     Text.literal(phase + dotStr),
-                    centerX, centerY - 20, 0xAAAAAA);
+                    centerX, phaseY, 0xFFFFFF);
         }
 
         // Progress bar
