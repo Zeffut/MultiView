@@ -487,10 +487,14 @@ public final class MergeOrchestrator {
         UUID[] secondaryPlayerUuid = new UUID[ctx.sources.size()];
         // Numeric ID of PLAYER_POSITION packet, for translating secondary EGO teleports
         int idPlayerPosition = -1;
+        int idForgetLevelChunk = -1;
+        int idRemoveEntities = -1;
         try {
             idPlayerPosition = GamePacketDispatch.findId(PlayPackets.PLAYER_POSITION);
+            idForgetLevelChunk = GamePacketDispatch.findId(PlayPackets.FORGET_LEVEL_CHUNK);
+            idRemoveEntities = GamePacketDispatch.findId(PlayPackets.REMOVE_ENTITIES);
         } catch (Throwable t) {
-            LOG.warning("MergeOrchestrator: could not resolve PLAYER_POSITION packet id: "
+            LOG.warning("MergeOrchestrator: could not resolve special packet ids: "
                     + t.getClass().getSimpleName());
         }
 
@@ -620,16 +624,34 @@ public final class MergeOrchestrator {
                         }
                     }
                     case WORLD -> {
-                        // Phase 4.E rollback: passthrough. The LWW decode path was causing
-                        // subtle playback issues (scene frozen). We re-enable it later once
-                        // validated against real replays.
-                        writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                        // Passthrough with one filter: FORGET_LEVEL_CHUNK (chunk unload)
+                        // from secondary sources is dropped. With N POVs, each source unloads
+                        // chunks its local player leaves → the merged stream would cascade
+                        // unloads, flickering chunks in zones other POVs still cover.
+                        // Primary's unloads are kept (it's the camera source).
+                        if (cur.sourceIdx() != ctx.primarySourceIdx
+                                && cur.head().action() instanceof Action.GamePacket gp
+                                && idForgetLevelChunk >= 0
+                                && PacketClassifier.readPacketId(gp.bytes()) == idForgetLevelChunk) {
+                            // drop
+                        } else {
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                        }
                     }
                     case ENTITY -> {
-                        // Phase 4.D rollback: passthrough. The entity decode path was
-                        // producing empty/corrupted scenes due to registry lookup failures
-                        // on AddEntity. We re-enable it later once the registry access is fixed.
-                        writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                        // Passthrough with one filter: REMOVE_ENTITIES from secondary sources
+                        // is dropped — another POV may still see the entity. With N POVs, any
+                        // source that temporarily loses sight of a mob/player triggers a
+                        // despawn that the merged stream would propagate, making players
+                        // flicker in and out of the scene.
+                        if (cur.sourceIdx() != ctx.primarySourceIdx
+                                && cur.head().action() instanceof Action.GamePacket gp
+                                && idRemoveEntities >= 0
+                                && PacketClassifier.readPacketId(gp.bytes()) == idRemoveEntities) {
+                            // drop
+                        } else {
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                        }
                     }
                     case PASSTHROUGH -> {
                         writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
