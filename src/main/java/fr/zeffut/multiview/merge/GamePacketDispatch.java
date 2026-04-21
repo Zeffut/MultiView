@@ -176,6 +176,14 @@ public final class GamePacketDispatch {
         m.put(PlayPackets.HURT_ANIMATION, Category.EGO);
         // DeathMessageS2CPacket (PLAYER_COMBAT_KILL)
         m.put(PlayPackets.PLAYER_COMBAT_KILL, Category.EGO);
+        // ChunkRenderDistanceCenterS2CPacket (SET_CHUNK_CACHE_CENTER)
+        // — tells the client where to center chunk loading. Must follow the primary
+        // POV only; secondary sources' values would fight over which chunks load.
+        m.put(PlayPackets.SET_CHUNK_CACHE_CENTER, Category.EGO);
+        // ChunkLoadDistanceS2CPacket (SET_CHUNK_CACHE_RADIUS)
+        m.put(PlayPackets.SET_CHUNK_CACHE_RADIUS, Category.EGO);
+        // SimulationDistanceS2CPacket
+        m.put(PlayPackets.SET_SIMULATION_DISTANCE, Category.EGO);
 
         // --- GLOBAL packets ---
         // WorldTimeUpdateS2CPacket (SET_TIME)
