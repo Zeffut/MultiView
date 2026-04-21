@@ -2,6 +2,7 @@ package fr.zeffut.multiview.merge;
 
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
+import com.mojang.authlib.GameProfile;
 import fr.zeffut.multiview.format.Action;
 import fr.zeffut.multiview.format.ActionType;
 import fr.zeffut.multiview.format.FlashbackByteBuf;
@@ -14,6 +15,10 @@ import fr.zeffut.multiview.format.SegmentWriter;
 import fr.zeffut.multiview.format.VarInts;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import net.minecraft.network.PacketByteBuf;
+import net.minecraft.network.packet.PlayPackets;
+import net.minecraft.network.packet.s2c.play.PlayerPositionLookS2CPacket;
+import net.minecraft.registry.DynamicRegistryManager;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -45,6 +50,9 @@ import java.util.zip.ZipOutputStream;
  * @implNote Non thread-safe. Use a fresh instance per merge.
  */
 public final class MergeOrchestrator {
+
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(MergeOrchestrator.class.getName());
 
     private MergeOrchestrator() {}
 
@@ -160,6 +168,7 @@ public final class MergeOrchestrator {
             CacheRemapper cacheRemapper = new CacheRemapper();
             PacketClassifier classifier = new PacketClassifier(
                     GamePacketDispatch.buildOrFallback(report));
+            SecondaryPlayerSynthesizer secondarySynth = new SecondaryPlayerSynthesizer(idRemapper);
 
             // 5. Atomic staging
             destTmp = destFinal.resolveSibling("." + destFinal.getFileName() + ".tmp");
@@ -208,7 +217,8 @@ public final class MergeOrchestrator {
             progress.accept("Streaming merge...");
             Map<String, Integer> segmentDurations = streamMerge(
                     ctx, classifier, worldMerger, worldRewriter, entityMerger, entityRewriter,
-                    idRemapper, globalDeduper, cacheRemapper, povTracker, fileOffset, destTmp, progress);
+                    idRemapper, globalDeduper, cacheRemapper, povTracker, secondarySynth,
+                    fileOffset, destTmp, progress);
 
             // Step A: Write merged metadata.json
             progress.accept("Écriture metadata.json...");
@@ -411,7 +421,9 @@ public final class MergeOrchestrator {
                                     EntityMerger entityMerger,
                                     EntityPacketRewriter entityRewriter, IdRemapper idRemapper,
                                     GlobalDeduper globalDeduper, CacheRemapper cacheRemapper,
-                                    SourcePovTracker povTracker, int[] fileOffset, Path destTmp,
+                                    SourcePovTracker povTracker,
+                                    SecondaryPlayerSynthesizer secondarySynth,
+                                    int[] fileOffset, Path destTmp,
                                     Consumer<String> progress) throws IOException {
 
         // Segment durations: insertion-ordered, populated as each segment is closed.
@@ -460,6 +472,17 @@ public final class MergeOrchestrator {
         int nextTickOrdinal    = mainRegistry.indexOf(ActionType.NEXT_TICK);
         int gamePacketOrdinal  = mainRegistry.indexOf(ActionType.GAME_PACKET);
         int cacheRefOrdinal    = mainRegistry.indexOf(ActionType.CACHE_CHUNK);
+
+        // Per-source secondary player state: UUID and fake entity ID (-1 = not yet spawned)
+        UUID[] secondaryPlayerUuid = new UUID[ctx.sources.size()];
+        // Numeric ID of PLAYER_POSITION packet, for translating secondary EGO teleports
+        int idPlayerPosition = -1;
+        try {
+            idPlayerPosition = GamePacketDispatch.findId(PlayPackets.PLAYER_POSITION);
+        } catch (Throwable t) {
+            LOG.warning("MergeOrchestrator: could not resolve PLAYER_POSITION packet id: "
+                    + t.getClass().getSimpleName());
+        }
 
         // 2. One cursor per source, priority-queue ordered by (tickAbs, sourceIdx)
         record SourceCursor(int sourceIdx, Iterator<PacketEntry> it, PacketEntry head) {}
@@ -573,10 +596,44 @@ public final class MergeOrchestrator {
                         // Flashback has a SINGLE local player slot (ReplayGamePacketHandler.localPlayerId).
                         // Emitting CreateLocalPlayer from multiple sources overwrites the slot and
                         // breaks move propagation for both. We emit ONLY the primary source's
-                        // CreateLocalPlayer. Secondary players are still visible via AddEntity
-                        // (emitted when the primary POV observes them) — see Phase 4.A debt.
+                        // CreateLocalPlayer.
+                        //
+                        // For secondary sources we synthesize two packets that make the secondary
+                        // player visible as a regular entity in the primary's view:
+                        //   1. PlayerInfoUpdate(ADD_PLAYER) — registers name/skin in tab-list
+                        //   2. EntitySpawnS2CPacket         — spawns player entity at (0,0,0)
+                        // Position is corrected later when secondary PLAYER_POSITION EGO packets
+                        // are converted to TeleportEntity packets (see EGO case below).
                         if (cur.head().action() instanceof Action.CreatePlayer cp) {
                             entityRewriter.recordLocalPlayerUuid(cur.sourceIdx(), cp.bytes());
+
+                            if (cur.sourceIdx() != ctx.primarySourceIdx
+                                    && secondarySynth.isAvailable()
+                                    && gamePacketOrdinal >= 0) {
+
+                                UUID uuid = SecondaryPlayerSynthesizer.extractUuid(cp.bytes());
+                                if (uuid != null) {
+                                    secondaryPlayerUuid[cur.sourceIdx()] = uuid;
+
+                                    // 1. PlayerInfoUpdate(ADD_PLAYER)
+                                    GameProfile profile =
+                                            SecondaryPlayerSynthesizer.extractGameProfile(cp.bytes());
+                                    byte[] playerInfoPayload =
+                                            secondarySynth.synthesizePlayerInfoUpdate(profile);
+                                    if (playerInfoPayload != null) {
+                                        currentWriter.writeLiveAction(
+                                                gamePacketOrdinal, playerInfoPayload);
+                                    }
+
+                                    // 2. EntitySpawnS2CPacket (ADD_ENTITY, PLAYER type)
+                                    byte[] addEntityPayload =
+                                            secondarySynth.synthesizeAddEntity(cur.sourceIdx(), uuid);
+                                    if (addEntityPayload != null) {
+                                        currentWriter.writeLiveAction(
+                                                gamePacketOrdinal, addEntityPayload);
+                                    }
+                                }
+                            }
                         }
                         if (cur.sourceIdx() == ctx.primarySourceIdx) {
                             writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
@@ -599,9 +656,50 @@ public final class MergeOrchestrator {
                     }
                     case EGO -> {
                         // Primary only: routes HUD packets to main stream (Flashback handles natively).
-                        // Secondary EGOs dropped: they'd corrupt primary's HUD state.
+                        // Secondary EGOs are generally dropped (they'd corrupt primary's HUD state).
+                        //
+                        // Exception: PLAYER_POSITION from a secondary source is translated into a
+                        // TeleportEntity packet targeting the secondary's fake player entity.
+                        // This keeps the secondary player entity positioned correctly in the world.
                         if (cur.sourceIdx() == ctx.primarySourceIdx) {
                             writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                        } else if (cur.head().action() instanceof Action.GamePacket gp
+                                && idPlayerPosition >= 0
+                                && PacketClassifier.readPacketId(gp.bytes()) == idPlayerPosition
+                                && secondarySynth.isAvailable()
+                                && gamePacketOrdinal >= 0) {
+
+                            // Secondary PLAYER_POSITION → synthesize TeleportEntity for the fake player
+                            int fakeEntityId = secondarySynth.getFakeEntityId(cur.sourceIdx());
+                            if (fakeEntityId >= 0) {
+                                try {
+                                    // Decode PLAYER_POSITION to extract absolute position
+                                    // Wire format: VarInt packetId + CODEC body (PacketByteBuf)
+                                    byte[] payload = gp.bytes();
+                                    ByteBuf raw = Unpooled.wrappedBuffer(payload);
+                                    VarInts.readVarInt(raw); // skip packetId
+                                    PacketByteBuf packetBuf = new PacketByteBuf(raw);
+                                    PlayerPositionLookS2CPacket posPacket =
+                                            PlayerPositionLookS2CPacket.CODEC.decode(packetBuf);
+
+                                    double x = posPacket.change().position().x;
+                                    double y = posPacket.change().position().y;
+                                    double z = posPacket.change().position().z;
+                                    float yaw   = posPacket.change().yaw();
+                                    float pitch = posPacket.change().pitch();
+
+                                    byte[] teleportPayload = secondarySynth.synthesizeTeleport(
+                                            fakeEntityId, x, y, z, yaw, pitch);
+                                    if (teleportPayload != null) {
+                                        currentWriter.writeLiveAction(
+                                                gamePacketOrdinal, teleportPayload);
+                                    }
+                                } catch (Throwable t) {
+                                    LOG.warning("MergeOrchestrator: failed to translate "
+                                            + "PLAYER_POSITION to TeleportEntity for source "
+                                            + cur.sourceIdx() + ": " + t.getMessage());
+                                }
+                            }
                         }
                     }
                     case GLOBAL -> {
