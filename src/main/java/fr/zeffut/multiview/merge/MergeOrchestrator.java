@@ -235,7 +235,8 @@ public final class MergeOrchestrator {
             FlashbackMetadata primaryMeta = replays.get(primaryIdx).metadata();
             FlashbackMetadata mergedMeta = buildMergedMetadata(
                     primaryMeta, replays, alignment.mergedTotalTicks(),
-                    destFinal.getFileName().toString(), segmentDurations);
+                    destFinal.getFileName().toString(), segmentDurations,
+                    alignment.tickOffsets());
             try (var w = Files.newBufferedWriter(destTmp.resolve("metadata.json"))) {
                 mergedMeta.toJson(w);
             }
@@ -386,7 +387,8 @@ public final class MergeOrchestrator {
             List<FlashbackReplay> replays,
             int mergedTotalTicks,
             String destName,
-            Map<String, Integer> segmentDurations) {
+            Map<String, Integer> segmentDurations,
+            int[] tickOffsets) {
 
         Map<String, Object> chunksMap = new LinkedHashMap<>();
         for (Map.Entry<String, Integer> e : segmentDurations.entrySet()) {
@@ -394,6 +396,24 @@ public final class MergeOrchestrator {
             segMap.put("duration", e.getValue());
             segMap.put("forcePlaySnapshot", false);
             chunksMap.put(e.getKey(), segMap);
+        }
+
+        // Aggregate markers from all sources, offsetting each by the source's tickOffset
+        // so they land on the merged timeline. Tick collisions are resolved by appending
+        // a small disambiguation (the first one wins per tick, later ones shifted +1).
+        JsonObject markersJson = new JsonObject();
+        java.util.Set<Integer> usedTicks = new java.util.HashSet<>();
+        for (int i = 0; i < replays.size(); i++) {
+            int offset = tickOffsets[i];
+            for (var me : replays.get(i).metadata().markers().entrySet()) {
+                int tick = me.getKey() + offset;
+                while (usedTicks.contains(tick)) tick++; // disambiguate collisions
+                usedTicks.add(tick);
+                JsonObject markerObj = new JsonObject();
+                markerObj.addProperty("colour", me.getValue().colour());
+                markerObj.addProperty("description", me.getValue().description());
+                markersJson.add(Integer.toString(tick), markerObj);
+            }
         }
 
         // Build JSON representation using Gson's JsonObject to avoid reflection
@@ -409,7 +429,7 @@ public final class MergeOrchestrator {
         obj.addProperty("protocol_version", primary.protocolVersion());
         obj.addProperty("bobby_world_name", primary.bobbyWorldName());
         obj.addProperty("total_ticks", mergedTotalTicks);
-        obj.add("markers", new JsonObject());       // empty — Phase 4 can aggregate
+        obj.add("markers", markersJson);
         obj.add("customNamespacesForRegistries", new JsonObject()); // required by Flashback to list the replay
         obj.add("chunks", gson.toJsonTree(chunksMap));
 
