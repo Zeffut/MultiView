@@ -558,12 +558,15 @@ public final class MergeOrchestrator {
                     currentWriter.finishStreaming();
                     segmentDurations.put(segName, segDuration);
 
-                    // Open next segment with an empty snapshot
+                    // Open next segment; seed snapshot from primary source's segment
+                    // covering this tick boundary so Flashback seek doesn't show a void world.
                     currentSegmentIdx++;
                     currentSegmentStart = tickAbsEmitted;
                     String nextSegName = "c" + currentSegmentIdx + ".flashback";
                     currentWriter = new SegmentWriter(nextSegName, mainRegistry);
-                    currentWriter.endSnapshot(); // empty snapshot for cN where N > 0
+                    copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
+                            currentWriter, currentSegmentStart, mainRegistry, ctx.report);
+                    currentWriter.endSnapshot();
                     currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
                 }
 
@@ -585,6 +588,8 @@ public final class MergeOrchestrator {
                         currentSegmentStart = tickAbsEmitted;
                         String nextSegName = "c" + currentSegmentIdx + ".flashback";
                         currentWriter = new SegmentWriter(nextSegName, mainRegistry);
+                        copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
+                                currentWriter, currentSegmentStart, mainRegistry, ctx.report);
                         currentWriter.endSnapshot();
                         currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
                     }
@@ -717,6 +722,109 @@ public final class MergeOrchestrator {
         }
 
         return segmentDurations;
+    }
+
+    /**
+     * Copies snapshot actions from the primary source segment whose cumulative tick range
+     * contains {@code absTick} into {@code dest}.
+     *
+     * <p>Primary source segments are matched by iterating {@code primary.metadata().chunks()}
+     * and accumulating their durations. The first segment whose range [segStart, segStart+duration)
+     * contains {@code absTick} is opened. If {@code absTick} falls beyond all primary segments
+     * (primary ended before this point), we use the last primary segment as a best-effort
+     * approximation.
+     *
+     * <p>Registry mismatch between the primary segment and {@code destRegistry} is handled by
+     * mapping each action's ordinal through the primary segment's own registry to obtain the
+     * type-id string, then looking it up in {@code destRegistry}. Actions with no mapping are
+     * silently dropped (their count is tracked in the report).
+     *
+     * @param primary       the primary source replay
+     * @param dest          the new output segment writer (snapshot not yet closed)
+     * @param absTick       the absolute merged tick at which the new segment starts
+     * @param destRegistry  the merged output registry
+     * @param report        merge report for tracking dropped snapshot actions
+     */
+    private static void copyPrimarySnapshotForTick(
+            FlashbackReplay primary,
+            SegmentWriter dest,
+            int absTick,
+            List<String> destRegistry,
+            MergeReport report) {
+
+        List<Path> segments = primary.segmentPaths();
+        if (segments.isEmpty()) return;
+
+        // Walk primary's chunks metadata to find which segment covers absTick.
+        // metadata().chunks() returns an insertion-ordered map of segmentName → ChunkInfo.
+        int segStart = 0;
+        int targetSegmentIndex = segments.size() - 1; // fallback: last segment
+        int chunkIdx = 0;
+        for (Map.Entry<String, FlashbackMetadata.ChunkInfo> entry
+                : primary.metadata().chunks().entrySet()) {
+            int duration = entry.getValue().duration();
+            if (absTick < segStart + duration) {
+                // absTick falls within this segment's range
+                targetSegmentIndex = chunkIdx;
+                break;
+            }
+            segStart += duration;
+            chunkIdx++;
+            // If chunkIdx exceeds segments.size(), the loop exits and we use the last segment
+            if (chunkIdx >= segments.size()) {
+                targetSegmentIndex = segments.size() - 1;
+                break;
+            }
+        }
+
+        Path segPath = segments.get(targetSegmentIndex);
+        int copiedCount = 0;
+        int droppedCount = 0;
+        try {
+            byte[] segBytes = Files.readAllBytes(segPath);
+            FlashbackByteBuf segBuf = new FlashbackByteBuf(
+                    io.netty.buffer.Unpooled.wrappedBuffer(segBytes));
+            SegmentReader reader = new SegmentReader(segPath.getFileName().toString(), segBuf);
+            List<String> primaryRegistry = reader.registry();
+
+            while (reader.hasNext() && reader.isPeekInSnapshot()) {
+                SegmentReader.RawAction raw = reader.nextRaw();
+                // Map ordinal from primary segment's registry to dest registry via type-id string
+                String typeId = (raw.ordinal() >= 0 && raw.ordinal() < primaryRegistry.size())
+                        ? primaryRegistry.get(raw.ordinal())
+                        : null;
+                if (typeId == null) {
+                    droppedCount++;
+                    continue;
+                }
+                int destOrdinal = destRegistry.indexOf(typeId);
+                if (destOrdinal < 0) {
+                    // Type not present in merged registry — drop silently
+                    droppedCount++;
+                    continue;
+                }
+                dest.writeSnapshotAction(destOrdinal, raw.payload());
+                copiedCount++;
+            }
+        } catch (IOException e) {
+            report.warn("copyPrimarySnapshotForTick: failed to read segment "
+                    + segPath.getFileName() + " for absTick=" + absTick
+                    + " (" + e.getMessage() + "). Snapshot will be empty for this segment.");
+            return;
+        }
+
+        if (droppedCount > 0) {
+            report.warn("copyPrimarySnapshotForTick: dropped " + droppedCount
+                    + " snapshot actions (registry mismatch) for absTick=" + absTick
+                    + " (segment " + segPath.getFileName() + ", copied=" + copiedCount + ")");
+        }
+        // Capture into final locals for use in lambda (compiler requires effectively-final)
+        final int finalCopied = copiedCount;
+        final int finalDropped = droppedCount;
+        final int finalSegIdx = targetSegmentIndex;
+        LOG.fine(() -> "copyPrimarySnapshotForTick: absTick=" + absTick
+                + " → segment[" + finalSegIdx + "]=" + segPath.getFileName()
+                + " copied=" + finalCopied + " dropped=" + finalDropped);
     }
 
     /**

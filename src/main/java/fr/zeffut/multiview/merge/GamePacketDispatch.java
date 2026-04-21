@@ -186,6 +186,11 @@ public final class GamePacketDispatch {
         m.put(PlayPackets.SET_SIMULATION_DISTANCE, Category.EGO);
 
         // --- GLOBAL packets ---
+        // PlayerListS2CPacket (PLAYER_INFO_UPDATE, PLAYER_INFO_REMOVE)
+        // Must be GLOBAL so GlobalDeduper deduplicates identical entries across sources
+        // instead of emitting one copy per source (which causes player list flickering).
+        m.put(PlayPackets.PLAYER_INFO_UPDATE, Category.GLOBAL);
+        m.put(PlayPackets.PLAYER_INFO_REMOVE, Category.GLOBAL);
         // WorldTimeUpdateS2CPacket (SET_TIME)
         m.put(PlayPackets.SET_TIME, Category.GLOBAL);
         // GameMessageS2CPacket (SYSTEM_CHAT)
