@@ -121,8 +121,8 @@ public class MergeProgressScreen extends Screen {
         int centerY = this.height / 2;
 
         // Layout (vertically stacked, centered):
-        //   Title       — centerY - 40
-        //   Phase text  — centerY - 15
+        //   Title       — centerY - 60
+        //   Phase text  — centerY - 30
         //   Progress bar— centerY + 5
         //   Percentage  — centerY + 25
         int barW = 300;
@@ -132,11 +132,11 @@ public class MergeProgressScreen extends Screen {
         // Title
         context.drawCenteredTextWithShadow(this.textRenderer,
                 Text.translatable("multiview.merge_progress.title"),
-                centerX, centerY - 40, 0xFFFFFF);
+                centerX, centerY - 60, 0xFFFFFF);
 
         // Phase text with animated dots — dedicated row with its own background
         String phase = currentPhase.get();
-        int phaseY = centerY - 15;
+        int phaseY = centerY - 30;
         if (errorMessage != null) {
             context.drawCenteredTextWithShadow(this.textRenderer,
                     Text.literal(errorMessage),
