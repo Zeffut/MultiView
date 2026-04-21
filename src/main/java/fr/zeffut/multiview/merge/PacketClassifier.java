@@ -27,7 +27,16 @@ public final class PacketClassifier {
             case Action.CacheChunkRef ref -> Category.CACHE_REF;
             case Action.VoiceChat v -> Category.EGO;
             case Action.EncodedVoiceChat v -> Category.EGO;
-            case Action.Unknown u -> Category.PASSTHROUGH;
+            case Action.Unknown u -> {
+                // AccuratePlayerPosition is Flashback-proprietary and encodes the local
+                // player's position every tick. It must come from the primary source only;
+                // secondary sources' positions would fight for the single local-player slot.
+                if ("flashback:action/accurate_player_position_optional".equals(u.id())
+                        || "flashback:action/accurate_player_position".equals(u.id())) {
+                    yield Category.LOCAL_PLAYER;
+                }
+                yield Category.PASSTHROUGH;
+            }
             case Action.GamePacket gp -> gamePacketDispatch.apply(readPacketId(gp.bytes()));
         };
     }
