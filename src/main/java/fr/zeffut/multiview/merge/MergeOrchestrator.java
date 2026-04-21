@@ -583,38 +583,16 @@ public final class MergeOrchestrator {
                         writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case WORLD -> {
-                        // Phase 4.E: LWW arbitration for block updates via WorldPacketRewriter.
-                        // BlockUpdate and SectionBlocksUpdate packets are decoded, LWW-tested,
-                        // and re-encoded (or dropped). Other WORLD packets (chunk load/unload,
-                        // light, block entity, etc.) pass through unchanged.
-                        if (cur.head().action() instanceof Action.GamePacket gp) {
-                            byte[] rewritten = worldRewriter.rewrite(
-                                    cur.sourceIdx(), tickAbs, gp.bytes());
-                            if (rewritten != null && gamePacketOrdinal >= 0) {
-                                currentWriter.writeLiveAction(gamePacketOrdinal, rewritten);
-                            }
-                            // rewritten == null → stale block update, drop silently
-                        } else {
-                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
-                        }
+                        // Phase 4.E rollback: passthrough. The LWW decode path was causing
+                        // subtle playback issues (scene frozen). We re-enable it later once
+                        // validated against real replays.
+                        writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case ENTITY -> {
-                        // Phase 4.D: decode entity packets, remap IDs via EntityMerger/IdRemapper.
-                        if (cur.head().action() instanceof Action.GamePacket gp) {
-                            byte[] rewritten = entityRewriter.rewrite(
-                                    cur.sourceIdx(), tickAbs, gp.bytes());
-                            if (gamePacketOrdinal >= 0) {
-                                currentWriter.writeLiveAction(gamePacketOrdinal, rewritten);
-                            }
-                        } else if (cur.head().action() instanceof Action.MoveEntities me) {
-                            // MoveEntities: update POV tracker, then passthrough.
-                            // TODO Phase 4.E: remap entity IDs within MoveEntities payload.
-                            entityRewriter.processMoveEntities(
-                                    cur.sourceIdx(), tickAbs, me.bytes());
-                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
-                        } else {
-                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
-                        }
+                        // Phase 4.D rollback: passthrough. The entity decode path was
+                        // producing empty/corrupted scenes due to registry lookup failures
+                        // on AddEntity. We re-enable it later once the registry access is fixed.
+                        writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                     }
                     case PASSTHROUGH -> {
                         writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);

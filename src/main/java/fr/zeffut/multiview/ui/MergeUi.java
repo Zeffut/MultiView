@@ -107,20 +107,20 @@ public final class MergeUi {
         SelectionState state = new SelectionState();
 
         // --- Layout constants ------------------------------------------------
-        // Flashback's native buttons are at the very bottom of the screen.
-        // We add our buttons just above that row (or in a second row).
-        // The exact Y of Flashback's row isn't accessible without reflection,
-        // but conventionally it's at height - 52 (first row) and height - 28 (second row).
-        // We place our buttons at height - 52 (same row, but to the left-ish area).
-        int btnY = scaledHeight - 52;
+        // Place our buttons in the top-right corner of the screen, out of the way
+        // of Flashback's native title/search/sort row (top-left) and its
+        // Open/Edit/Delete/Back button rows (bottom).
         int btnH = 20;
         int toggleW = 110;
         int mergeW = 120;
         int gap = 4;
+        int margin = 4;
 
-        // Center the pair: total width = toggleW + gap + mergeW = 234
-        int totalW = toggleW + gap + mergeW;
-        int startX = (scaledWidth - totalW) / 2 - 80; // shift left to avoid overlap
+        int btnY = margin;
+        // Two stacked rows on the right: toggle on top, merge below.
+        int startX = scaledWidth - toggleW - margin;
+        int mergeX = scaledWidth - mergeW - margin;
+        int mergeY = btnY + btnH + gap;
 
         // Toggle button
         ButtonWidget toggleBtn = ButtonWidget.builder(
@@ -134,7 +134,7 @@ public final class MergeUi {
         ButtonWidget mergeBtn = ButtonWidget.builder(
                         Text.translatable("multiview.button.merge_selected"),
                         btn -> startMerge(state, srs, client))
-                .dimensions(startX + toggleW + gap, btnY, mergeW, btnH)
+                .dimensions(mergeX, mergeY, mergeW, btnH)
                 .build();
         mergeBtn.active = false;
         state.mergeButton = mergeBtn;

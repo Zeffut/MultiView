@@ -25,6 +25,12 @@ public class MergeProgressScreen extends Screen {
     /** Dots animation counter (ticks). */
     private int tickCount = 0;
 
+    /** Extracted from phase strings matching "tick N / M". 0..1, -1 if unknown. */
+    private volatile double progress = -1.0;
+
+    private static final java.util.regex.Pattern PROGRESS_PATTERN =
+            java.util.regex.Pattern.compile("(\\d+)\\s*/\\s*(\\d+)");
+
     public MergeProgressScreen(Screen previousScreen) {
         super(Text.translatable("multiview.merge_progress.title"));
         this.previousScreen = previousScreen;
@@ -54,6 +60,14 @@ public class MergeProgressScreen extends Screen {
      */
     public void setPhase(String phase) {
         currentPhase.set(phase);
+        java.util.regex.Matcher m = PROGRESS_PATTERN.matcher(phase);
+        if (m.find()) {
+            try {
+                long cur = Long.parseLong(m.group(1));
+                long total = Long.parseLong(m.group(2));
+                if (total > 0) progress = Math.min(1.0, (double) cur / total);
+            } catch (NumberFormatException ignore) {}
+        }
     }
 
     /**
@@ -96,7 +110,9 @@ public class MergeProgressScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        super.renderBackground(context, mouseX, mouseY, delta);
+        // super.render already calls renderBackground internally; calling it
+        // again triggered "Can only blur once per frame" in 1.21.x.
+        super.render(context, mouseX, mouseY, delta);
 
         int centerX = this.width / 2;
         int centerY = this.height / 2;
@@ -126,16 +142,29 @@ public class MergeProgressScreen extends Screen {
                     centerX, centerY - 20, 0xAAAAAA);
         }
 
-        // Spinner: simple rotating ascii spinner
+        // Progress bar
         if (errorMessage == null && !done) {
-            char[] spinner = {'|', '/', '-', '\\'};
-            char spin = spinner[(tickCount / 5) % spinner.length];
-            context.drawCenteredTextWithShadow(this.textRenderer,
-                    Text.literal(String.valueOf(spin)),
-                    centerX, centerY + 10, 0xFFFFFF);
+            int barW = 300;
+            int barH = 14;
+            int barX = centerX - barW / 2;
+            int barY = centerY + 10;
+            // Border
+            context.fill(barX - 1, barY - 1, barX + barW + 1, barY + barH + 1, 0xFFFFFFFF);
+            // Background
+            context.fill(barX, barY, barX + barW, barY + barH, 0xFF404040);
+            // Fill (if known) or indeterminate pulse
+            if (progress >= 0.0) {
+                int fillW = (int) (barW * progress);
+                context.fill(barX, barY, barX + fillW, barY + barH, 0xFF4CAF50);
+                String pct = String.format("%.1f%%", progress * 100.0);
+                context.drawCenteredTextWithShadow(this.textRenderer,
+                        Text.literal(pct), centerX, barY + barH + 4, 0xFFFFFF);
+            } else {
+                int pulseW = 60;
+                int pulseX = barX + (int) ((barW - pulseW) * ((tickCount % 60) / 60.0));
+                context.fill(pulseX, barY, pulseX + pulseW, barY + barH, 0xFF4CAF50);
+            }
         }
-
-        super.render(context, mouseX, mouseY, delta);
     }
 
     @Override
