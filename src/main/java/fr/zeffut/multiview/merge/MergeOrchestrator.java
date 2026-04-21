@@ -144,13 +144,23 @@ public final class MergeOrchestrator {
             }
             report.mergedTotalTicks = alignment.mergedTotalTicks();
 
-            // 3. Primary source (largest totalTicks)
+            // 3. Primary source: the one that STARTS FIRST (smallest tickOffset).
+            // Rationale: primary provides the initial snapshot at tick 0 of the merged
+            // timeline. If primary had a non-zero tickOffset, the client would render
+            // primary's snapshot but see only secondary packets until primary "joined" —
+            // causing visual glitches (stuck camera, wrong chunks) during the early ticks.
+            // Ties broken by largest totalTicks.
             int primaryIdx = 0;
+            int primaryOffset = alignment.tickOffsets()[0];
             int primaryLen = replays.get(0).metadata().totalTicks();
             for (int i = 1; i < replays.size(); i++) {
-                if (replays.get(i).metadata().totalTicks() > primaryLen) {
+                int offset = alignment.tickOffsets()[i];
+                int len = replays.get(i).metadata().totalTicks();
+                if (offset < primaryOffset
+                        || (offset == primaryOffset && len > primaryLen)) {
                     primaryIdx = i;
-                    primaryLen = replays.get(i).metadata().totalTicks();
+                    primaryOffset = offset;
+                    primaryLen = len;
                 }
             }
 
