@@ -741,6 +741,11 @@ public final class MergeOrchestrator {
                         //   2. LEVEL_CHUNK_WITH_LIGHT: dedup by content hash across all
                         //      sources — avoids multiple POVs overwriting the same chunk
                         //      with competing states.
+                        //   3. BLOCK_UPDATE / SECTION_BLOCKS_UPDATE: LWW arbitration via
+                        //      WorldPacketRewriter (Phase 4.E re-enabled, 0.2.4). Stale
+                        //      updates (from a slower POV) are dropped; the rewriter may
+                        //      also re-encode SECTION_BLOCKS_UPDATE with only surviving
+                        //      entries when a batch is partially stale.
                         if (cur.head().action() instanceof Action.GamePacket gp) {
                             int pid = PacketClassifier.readPacketId(gp.bytes());
                             if (cur.sourceIdx() != ctx.primarySourceIdx
@@ -756,8 +761,15 @@ public final class MergeOrchestrator {
                                 }
                                 // else drop duplicate chunk from another source
                             } else {
-                                writeActionToMain(currentWriter, mainRegistry,
-                                        cur.head().action(), ctx.report);
+                                // Phase 4.E (0.2.4): LWW rewrite for BLOCK_UPDATE /
+                                // SECTION_BLOCKS_UPDATE. Passthrough for all other WORLD
+                                // packets (light, block entity, block event, etc.).
+                                byte[] rewritten = worldRewriter.rewrite(
+                                        cur.sourceIdx(), tickAbs, gp.bytes());
+                                if (rewritten != null && gamePacketOrdinal >= 0) {
+                                    currentWriter.writeLiveAction(gamePacketOrdinal, rewritten);
+                                }
+                                // rewritten == null → stale block update, drop silently
                             }
                         } else {
                             writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
