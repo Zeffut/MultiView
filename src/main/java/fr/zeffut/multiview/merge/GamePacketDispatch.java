@@ -176,6 +176,13 @@ public final class GamePacketDispatch {
         m.put(PlayPackets.HURT_ANIMATION, Category.EGO);
         // DeathMessageS2CPacket (PLAYER_COMBAT_KILL)
         m.put(PlayPackets.PLAYER_COMBAT_KILL, Category.EGO);
+        // PlayerRespawnS2CPacket (RESPAWN) — dimension change, MUST follow primary only.
+        // Otherwise secondary's dim change drags the replay client into their dimension,
+        // causing primary's subsequent chunk packets to be applied to the wrong dimension
+        // and silently dropped by Flashback → missing chunks.
+        m.put(PlayPackets.RESPAWN, Category.EGO);
+        // GameJoinS2CPacket (LOGIN) — initial world setup, keep primary only for same reason.
+        m.put(PlayPackets.LOGIN, Category.EGO);
         // ChunkRenderDistanceCenterS2CPacket (SET_CHUNK_CACHE_CENTER)
         // — tells the client where to center chunk loading. Must follow the primary
         // POV only; secondary sources' values would fight over which chunks load.
