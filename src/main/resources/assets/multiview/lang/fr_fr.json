@@ -1,0 +1,13 @@
+{
+  "multiview.button.merge_selected": "Fusionner la sélection",
+  "multiview.button.merge_selected.count": "Fusionner %d replays",
+  "multiview.merge_progress.title": "Fusion des replays...",
+  "multiview.merge_progress.done": "Fusion terminée !",
+  "multiview.merge_progress.phase.opening": "Ouverture des sources",
+  "multiview.merge_progress.phase.aligning": "Alignement temporel",
+  "multiview.merge_progress.phase.caches": "Copie des caches",
+  "multiview.merge_progress.phase.streaming": "Fusion en streaming",
+  "multiview.merge_progress.phase.metadata": "Écriture metadata",
+  "multiview.merge_progress.phase.packaging": "Création du ZIP",
+  "multiview.merge_progress.phase.done": "Fusion terminée"
+}

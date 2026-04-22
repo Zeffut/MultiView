@@ -2,5 +2,12 @@
   "multiview.button.merge_selected": "Merge Selected",
   "multiview.button.merge_selected.count": "Merge %d Replays",
   "multiview.merge_progress.title": "Merging Replays...",
-  "multiview.merge_progress.done": "Merge complete!"
+  "multiview.merge_progress.done": "Merge complete!",
+  "multiview.merge_progress.phase.opening": "Opening sources",
+  "multiview.merge_progress.phase.aligning": "Aligning timelines",
+  "multiview.merge_progress.phase.caches": "Copying caches",
+  "multiview.merge_progress.phase.streaming": "Streaming merge",
+  "multiview.merge_progress.phase.metadata": "Writing metadata",
+  "multiview.merge_progress.phase.packaging": "Packaging ZIP",
+  "multiview.merge_progress.phase.done": "Merge finished"
 }
