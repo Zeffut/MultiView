@@ -199,4 +199,92 @@ class SecondaryPlayerSynthesizerTest {
         assertEquals(0xAC, bytes[0] & 0xFF);
         assertEquals(0x02, bytes[1] & 0xFF);
     }
+
+    // -------------------------------------------------------------------------
+    // accurate_player_position_optional payload helpers (0.2.2)
+    // -------------------------------------------------------------------------
+
+    /** Helper: build an accurate_player_position payload (VarInt eid + VarInt count + N entries). */
+    private static byte[] buildAccuratePayload(int entityId, int count) {
+        ByteBuf buf = Unpooled.buffer(64);
+        VarInts.writeVarInt(buf, entityId);
+        VarInts.writeVarInt(buf, count);
+        for (int i = 0; i < count; i++) {
+            buf.writeDouble(i * 1.5);      // x
+            buf.writeDouble(64.0 + i);     // y
+            buf.writeDouble(-i * 2.25);    // z
+            buf.writeFloat(i * 30f);       // yaw
+            buf.writeFloat(-10f + i);      // pitch
+        }
+        byte[] out = new byte[buf.readableBytes()];
+        buf.readBytes(out);
+        return out;
+    }
+
+    @Test
+    void readAccuratePositionEntityId_smallValue() {
+        byte[] payload = buildAccuratePayload(42, 3);
+        assertEquals(42, SecondaryPlayerSynthesizer.readAccuratePositionEntityId(payload));
+    }
+
+    @Test
+    void readAccuratePositionEntityId_largeMultiByteVarInt() {
+        // 100_000_000 encodes as a multi-byte VarInt (matches IdRemapper's GLOBAL_ID_BASE)
+        byte[] payload = buildAccuratePayload(100_000_000, 1);
+        assertEquals(100_000_000,
+                SecondaryPlayerSynthesizer.readAccuratePositionEntityId(payload));
+    }
+
+    @Test
+    void readAccuratePositionEntityId_returnsMinusOneOnEmpty() {
+        assertEquals(-1, SecondaryPlayerSynthesizer.readAccuratePositionEntityId(null));
+        assertEquals(-1, SecondaryPlayerSynthesizer.readAccuratePositionEntityId(new byte[0]));
+    }
+
+    @Test
+    void rewriteAccuratePositionEntityId_replacesLeadingVarIntOnly() {
+        byte[] original = buildAccuratePayload(7, 4);     // eid 7 (1-byte VarInt)
+        byte[] rewritten = SecondaryPlayerSynthesizer
+                .rewriteAccuratePositionEntityId(original, 100_000_042);
+
+        // Leading entity id was replaced
+        assertEquals(100_000_042,
+                SecondaryPlayerSynthesizer.readAccuratePositionEntityId(rewritten));
+
+        // Count and first entry's bytes must still be readable & unchanged
+        // Read past the new eid + verify count / payload
+        ByteBuf buf = Unpooled.wrappedBuffer(rewritten);
+        int eid = VarInts.readVarInt(buf);
+        assertEquals(100_000_042, eid);
+        int count = VarInts.readVarInt(buf);
+        assertEquals(4, count);
+        // First entry: x=0.0, y=64.0, z=0.0, yaw=0.0, pitch=-10.0
+        assertEquals(0.0, buf.readDouble(), 1e-9);
+        assertEquals(64.0, buf.readDouble(), 1e-9);
+        assertEquals(0.0, buf.readDouble(), 1e-9);
+        assertEquals(0f, buf.readFloat(), 1e-6);
+        assertEquals(-10f, buf.readFloat(), 1e-6);
+    }
+
+    @Test
+    void rewriteAccuratePositionEntityId_growsPayloadWhenIdNeedsMoreBytes() {
+        byte[] original = buildAccuratePayload(7, 1);     // eid 7 → 1 byte
+        int originalLen = original.length;
+
+        byte[] rewritten = SecondaryPlayerSynthesizer
+                .rewriteAccuratePositionEntityId(original, 100_000_000); // 5-byte VarInt
+
+        // 100_000_000 as a VarInt takes 4 bytes (it's below 2^28) → payload grows by 3
+        assertTrue(rewritten.length >= originalLen);
+        assertTrue(rewritten.length <= originalLen + 4);
+        assertEquals(100_000_000,
+                SecondaryPlayerSynthesizer.readAccuratePositionEntityId(rewritten));
+    }
+
+    @Test
+    void rewriteAccuratePositionEntityId_emptyPayloadReturnsSameReference() {
+        byte[] empty = new byte[0];
+        byte[] result = SecondaryPlayerSynthesizer.rewriteAccuratePositionEntityId(empty, 123);
+        assertSame(empty, result);
+    }
 }

@@ -510,8 +510,24 @@ public final class MergeOrchestrator {
         int gamePacketOrdinal  = mainRegistry.indexOf(ActionType.GAME_PACKET);
         int cacheRefOrdinal    = mainRegistry.indexOf(ActionType.CACHE_CHUNK);
 
-        // Per-source secondary player state: UUID and fake entity ID (-1 = not yet spawned)
-        UUID[] secondaryPlayerUuid = new UUID[ctx.sources.size()];
+        // -------------------------------------------------------------------------
+        // 0.2.2: secondary POV always-visible synthesis state
+        // -------------------------------------------------------------------------
+        // For each secondary source, we emit one PlayerInfoUpdate(ADD_PLAYER) + AddEntity
+        // on the first CreateLocalPlayer we observe. Subsequent accurate_player_position
+        // payloads from that source are rewritten to target the fake entity ID.
+        // `secondarySpawned[sourceIdx]` : spawn packets already emitted
+        // `secondaryFakeEntityId[sourceIdx]` : global entity ID allocated for the fake player
+        // `secondaryLocalEntityId[sourceIdx]` : real local entity ID (discovered from first
+        //                                      accurate_player_position payload), registered
+        //                                      with the IdRemapper so subsequent entity-tracking
+        //                                      packets referencing this ID are remapped.
+        boolean[] secondarySpawned = new boolean[ctx.sources.size()];
+        int[] secondaryFakeEntityId = new int[ctx.sources.size()];
+        int[] secondaryLocalEntityId = new int[ctx.sources.size()];
+        java.util.Arrays.fill(secondaryFakeEntityId, -1);
+        java.util.Arrays.fill(secondaryLocalEntityId, -1);
+
         // Numeric ID of PLAYER_POSITION packet, for translating secondary EGO teleports
         int idPlayerPosition = -1;
         int idForgetLevelChunk = -1;
@@ -644,15 +660,79 @@ public final class MergeOrchestrator {
                         }
                     }
                     case LOCAL_PLAYER -> {
-                        // Phase 4.A: Flashback has a SINGLE local player slot. Emit only
-                        // from primary; drop secondary CreateLocalPlayer. Secondary player
-                        // is visible as entity when observed by the primary POV.
-                        // Synthesizer experiment rolled back — regressions on primary mvt.
+                        // Flashback has a SINGLE local-player slot. Primary's CreateLocalPlayer
+                        // and accurate_player_position_optional are emitted as-is.
+                        //
+                        // 0.2.2: secondary POVs are made visible as regular player entities:
+                        //   1. On first CreateLocalPlayer from a secondary source, synthesize
+                        //      PlayerInfoUpdate(ADD_PLAYER) + AddEntity(PLAYER type) packets
+                        //      so the client knows about this player and has an entity to
+                        //      position.
+                        //   2. For subsequent accurate_player_position_optional actions from
+                        //      that source, rewrite the encoded entityId to target the fake
+                        //      global ID — Flashback's AccurateEntityPositionHandler will then
+                        //      apply the position/angle to the fake entity every tick.
                         if (cur.head().action() instanceof Action.CreatePlayer cp) {
                             entityRewriter.recordLocalPlayerUuid(cur.sourceIdx(), cp.bytes());
-                        }
-                        if (cur.sourceIdx() == ctx.primarySourceIdx) {
-                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                            if (cur.sourceIdx() == ctx.primarySourceIdx) {
+                                writeActionToMain(currentWriter, mainRegistry,
+                                        cur.head().action(), ctx.report);
+                            } else if (!secondarySpawned[cur.sourceIdx()]
+                                    && secondarySynth.isAvailable()
+                                    && gamePacketOrdinal >= 0) {
+                                // Synthesize PlayerInfoUpdate(ADD_PLAYER) + AddEntity(PLAYER)
+                                UUID uuid = SecondaryPlayerSynthesizer.extractUuid(cp.bytes());
+                                com.mojang.authlib.GameProfile profile =
+                                        SecondaryPlayerSynthesizer.extractGameProfile(cp.bytes());
+                                byte[] infoPayload = secondarySynth.synthesizePlayerInfoUpdate(profile);
+                                byte[] addEntityPayload = secondarySynth.synthesizeAddEntity(
+                                        cur.sourceIdx(), uuid != null ? uuid : profile.id());
+                                int fakeId = secondarySynth.getFakeEntityId(cur.sourceIdx());
+                                if (infoPayload != null && addEntityPayload != null && fakeId >= 0) {
+                                    currentWriter.writeLiveAction(gamePacketOrdinal, infoPayload);
+                                    currentWriter.writeLiveAction(gamePacketOrdinal, addEntityPayload);
+                                    secondarySpawned[cur.sourceIdx()] = true;
+                                    secondaryFakeEntityId[cur.sourceIdx()] = fakeId;
+                                } else {
+                                    LOG.warning("MergeOrchestrator: secondary player synthesis "
+                                            + "failed for source " + cur.sourceIdx()
+                                            + " — player will remain invisible.");
+                                }
+                            }
+                        } else if (cur.head().action() instanceof Action.Unknown u
+                                && ("flashback:action/accurate_player_position_optional".equals(u.id())
+                                    || "flashback:action/accurate_player_position".equals(u.id()))) {
+                            if (cur.sourceIdx() == ctx.primarySourceIdx) {
+                                writeActionToMain(currentWriter, mainRegistry,
+                                        cur.head().action(), ctx.report);
+                            } else if (secondarySpawned[cur.sourceIdx()]
+                                    && secondaryFakeEntityId[cur.sourceIdx()] >= 0) {
+                                // Register the real local entity ID ↔ fake global ID mapping
+                                // on first sight so subsequent entity packets from this source
+                                // that reference the secondary's local-player ID get remapped
+                                // through the standard IdRemapper path.
+                                int localEid = SecondaryPlayerSynthesizer
+                                        .readAccuratePositionEntityId(u.payload());
+                                if (localEid >= 0 && secondaryLocalEntityId[cur.sourceIdx()] < 0) {
+                                    secondaryLocalEntityId[cur.sourceIdx()] = localEid;
+                                    idRemapper.assignExisting(cur.sourceIdx(), localEid,
+                                            secondaryFakeEntityId[cur.sourceIdx()]);
+                                }
+                                byte[] rewritten = SecondaryPlayerSynthesizer
+                                        .rewriteAccuratePositionEntityId(
+                                                u.payload(),
+                                                secondaryFakeEntityId[cur.sourceIdx()]);
+                                writeActionToMain(currentWriter, mainRegistry,
+                                        new Action.Unknown(u.id(), rewritten), ctx.report);
+                            }
+                            // else: secondary player not yet spawned (CreateLocalPlayer not seen)
+                            // — drop silently, the client has no entity to position yet.
+                        } else {
+                            // Other LOCAL_PLAYER actions (future-proofing): primary only.
+                            if (cur.sourceIdx() == ctx.primarySourceIdx) {
+                                writeActionToMain(currentWriter, mainRegistry,
+                                        cur.head().action(), ctx.report);
+                            }
                         }
                     }
                     case WORLD -> {
@@ -723,13 +803,28 @@ public final class MergeOrchestrator {
                         // Primary only: routes HUD packets to main stream (Flashback handles natively).
                         // Secondary EGOs are generally dropped (they'd corrupt primary's HUD state).
                         //
-                        // Exception: PLAYER_POSITION from a secondary source is translated into a
-                        // TeleportEntity packet targeting the secondary's fake player entity.
-                        // This keeps the secondary player entity positioned correctly in the world.
+                        // Exception (0.2.2): secondary's PLAYER_POSITION is translated to a
+                        // TeleportEntity packet targeting the secondary's fake player entity,
+                        // so large teleports / respawns show up on the fake entity.
+                        // Regular movement is already covered by the per-tick rewrite of
+                        // accurate_player_position_optional above.
                         if (cur.sourceIdx() == ctx.primarySourceIdx) {
                             writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                        } else if (secondarySpawned[cur.sourceIdx()]
+                                && secondaryFakeEntityId[cur.sourceIdx()] >= 0
+                                && idPlayerPosition >= 0
+                                && cur.head().action() instanceof Action.GamePacket gp
+                                && PacketClassifier.readPacketId(gp.bytes()) == idPlayerPosition) {
+                            byte[] teleport = tryTranslatePlayerPositionToTeleport(
+                                    gp.bytes(), secondaryFakeEntityId[cur.sourceIdx()],
+                                    secondarySynth);
+                            if (teleport != null && gamePacketOrdinal >= 0) {
+                                currentWriter.writeLiveAction(gamePacketOrdinal, teleport);
+                            }
+                            // else: drop silently — per-tick accurate_player_position_optional
+                            // will sync the position on the next tick.
                         }
-                        // Secondary EGO packets dropped entirely (Phase 4.A baseline).
+                        // else: drop secondary EGO.
                     }
                     case GLOBAL -> {
                         if (cur.head().action() instanceof Action.GamePacket gp) {
@@ -933,6 +1028,43 @@ public final class MergeOrchestrator {
         }
         byte[] payload = ActionType.encode(action);
         writer.writeLiveAction(ordinal, payload);
+    }
+
+    /**
+     * Attempts to translate a {@code PlayerPositionLookS2CPacket} payload into a
+     * {@code TeleportEntity} (EntityPositionS2CPacket) payload targeting
+     * {@code fakeEntityId}.
+     *
+     * <p>PLAYER_POSITION uses relative-position flags that describe which components
+     * are relative to the current position vs. absolute.  In the merge pipeline we
+     * do not have the client's previous position, so any packet with relative flags
+     * cannot be safely converted — we fall through and let the per-tick
+     * {@code accurate_player_position_optional} sync handle the next frame.
+     *
+     * <p>Returns {@code null} on decode failure, fallback mode, or if relative flags
+     * are set — callers should silently drop the packet in that case.
+     */
+    private static byte[] tryTranslatePlayerPositionToTeleport(
+            byte[] playerPositionPayload, int fakeEntityId,
+            SecondaryPlayerSynthesizer synth) {
+        if (!synth.isAvailable() || fakeEntityId < 0) return null;
+        try {
+            io.netty.buffer.ByteBuf raw =
+                    io.netty.buffer.Unpooled.wrappedBuffer(playerPositionPayload);
+            VarInts.readVarInt(raw); // skip packetId
+            PacketByteBuf pbuf = new PacketByteBuf(raw);
+            PlayerPositionLookS2CPacket decoded = PlayerPositionLookS2CPacket.CODEC.decode(pbuf);
+            // Skip if any relative flag is set — absolute position unknown.
+            if (!decoded.relatives().isEmpty()) return null;
+            net.minecraft.entity.EntityPosition pos = decoded.change();
+            net.minecraft.util.math.Vec3d v = pos.position();
+            return synth.synthesizeTeleport(fakeEntityId,
+                    v.x, v.y, v.z,
+                    pos.yaw(), pos.pitch());
+        } catch (Throwable t) {
+            // Decode failure is non-fatal; caller will drop.
+            return null;
+        }
     }
 
     /**

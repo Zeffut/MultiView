@@ -308,6 +308,67 @@ public final class SecondaryPlayerSynthesizer {
     }
 
     // -------------------------------------------------------------------------
+    // accurate_player_position_optional helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Reads the {@code entityId} that prefixes a Flashback
+     * {@code accurate_player_position_optional} action payload.
+     *
+     * <p>Payload layout (cf. {@code FlashbackAccurateEntityPosition} stream codec):
+     * <pre>
+     *   VarInt entityId
+     *   VarInt count
+     *   count × (double x, double y, double z, float yaw, float pitch)
+     * </pre>
+     *
+     * @param payload raw action payload
+     * @return the entity id, or {@code -1} if the payload is empty / malformed
+     */
+    public static int readAccuratePositionEntityId(byte[] payload) {
+        if (payload == null || payload.length == 0) return -1;
+        try {
+            ByteBuf buf = Unpooled.wrappedBuffer(payload);
+            return VarInts.readVarInt(buf);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
+     * Rewrites the leading VarInt {@code entityId} in an
+     * {@code accurate_player_position_optional} action payload, preserving all
+     * subsequent bytes (position / angle list).
+     *
+     * @param payload     original action payload (VarInt entityId + VarInt count + data)
+     * @param newEntityId replacement entity id
+     * @return rewritten payload, or the original reference if decoding failed
+     */
+    public static byte[] rewriteAccuratePositionEntityId(byte[] payload, int newEntityId) {
+        if (payload == null || payload.length == 0) return payload;
+        try {
+            ByteBuf in = Unpooled.wrappedBuffer(payload);
+            int originalStart = in.readerIndex();
+            VarInts.readVarInt(in); // skip old entityId
+            int afterOldId = in.readerIndex();
+
+            ByteBuf out = Unpooled.buffer(payload.length + 5);
+            VarInts.writeVarInt(out, newEntityId);
+            int remaining = payload.length - (afterOldId - originalStart);
+            if (remaining > 0) {
+                out.writeBytes(payload, afterOldId, remaining);
+            }
+            byte[] result = new byte[out.readableBytes()];
+            out.readBytes(result);
+            return result;
+        } catch (Throwable t) {
+            LOG.warning("SecondaryPlayerSynthesizer: rewriteAccuratePositionEntityId failed: "
+                    + t.getMessage());
+            return payload;
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Encoding helpers
     // -------------------------------------------------------------------------
 
