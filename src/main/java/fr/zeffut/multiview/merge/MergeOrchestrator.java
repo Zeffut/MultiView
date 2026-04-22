@@ -684,16 +684,34 @@ public final class MergeOrchestrator {
                         }
                     }
                     case ENTITY -> {
-                        // Passthrough with one filter: REMOVE_ENTITIES from secondary sources
-                        // is dropped — another POV may still see the entity. With N POVs, any
-                        // source that temporarily loses sight of a mob/player triggers a
-                        // despawn that the merged stream would propagate, making players
-                        // flicker in and out of the scene.
-                        if (cur.sourceIdx() != ctx.primarySourceIdx
-                                && cur.head().action() instanceof Action.GamePacket gp
-                                && idRemoveEntities >= 0
-                                && PacketClassifier.readPacketId(gp.bytes()) == idRemoveEntities) {
-                            // drop
+                        // Phase 4.D (re-enabled): decode entity packets, remap source-local
+                        // entity IDs to merged global IDs via EntityMerger/IdRemapper.
+                        //
+                        // REMOVE_ENTITIES from secondary sources is still dropped (primary-only)
+                        // — another POV may still see the entity. With N POVs, any source that
+                        // temporarily loses sight of a mob/player triggers a despawn that the
+                        // merged stream would propagate, making entities flicker in and out.
+                        // This filter runs BEFORE the rewrite so we do not waste work on
+                        // packets we will drop anyway.
+                        if (cur.head().action() instanceof Action.GamePacket gp) {
+                            int pid = PacketClassifier.readPacketId(gp.bytes());
+                            if (cur.sourceIdx() != ctx.primarySourceIdx
+                                    && idRemoveEntities >= 0
+                                    && pid == idRemoveEntities) {
+                                // drop secondary despawns
+                            } else {
+                                byte[] rewritten = entityRewriter.rewrite(
+                                        cur.sourceIdx(), tickAbs, gp.bytes());
+                                if (gamePacketOrdinal >= 0) {
+                                    currentWriter.writeLiveAction(gamePacketOrdinal, rewritten);
+                                }
+                            }
+                        } else if (cur.head().action() instanceof Action.MoveEntities me) {
+                            // MoveEntities: update POV tracker, then passthrough.
+                            // TODO Phase 4.E: remap entity IDs within MoveEntities payload.
+                            entityRewriter.processMoveEntities(
+                                    cur.sourceIdx(), tickAbs, me.bytes());
+                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         } else {
                             writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         }

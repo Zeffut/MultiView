@@ -11,8 +11,7 @@ import net.minecraft.registry.DynamicRegistryManager;
 import net.minecraft.registry.Registries;
 import net.minecraft.registry.Registry;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 import java.util.logging.Logger;
 
@@ -51,6 +50,28 @@ public final class EntityPacketRewriter {
      * All packets will pass through unchanged (same as Phase 3 behaviour).
      */
     private final boolean fallbackMode;
+
+    /**
+     * DynamicRegistryManager used for decoding/encoding ADD_ENTITY payloads.
+     * Needed because {@code EntitySpawnS2CPacket.CODEC} looks up the
+     * {@code minecraft:entity_type} registry at runtime via
+     * {@link RegistryByteBuf#getRegistryManager()}.
+     *
+     * <p>Built from the static {@link Registries#ENTITY_TYPE} after
+     * {@code Bootstrap.initialize()} has populated it (always true in the
+     * Minecraft Fabric client environment). If construction fails (e.g. in
+     * unit tests that bypass Bootstrap), {@link #addEntityDecodeAvailable} is
+     * set to {@code false} and ADD_ENTITY packets fall through as passthrough.
+     */
+    private final DynamicRegistryManager registryManager;
+
+    /**
+     * True iff {@link #registryManager} was successfully built AND contains a
+     * non-empty {@code minecraft:entity_type} registry. When false, ADD_ENTITY
+     * decode is bypassed (passthrough) but other entity packets still get
+     * rewritten via the binary splice path (which does not need a DRM).
+     */
+    private final boolean addEntityDecodeAvailable;
 
     /** Protocol IDs for entity packet types, resolved once at construction time. */
     private int idAddEntity;
@@ -123,6 +144,35 @@ public final class EntityPacketRewriter {
             fb = true;
         }
         this.fallbackMode = fb;
+
+        // Resolve a DynamicRegistryManager containing minecraft:entity_type.
+        // This is required to decode ADD_ENTITY payloads via EntitySpawnS2CPacket.CODEC
+        // (see RegistryByteBuf.getRegistryManager() + PacketCodecs.registryValue).
+        //
+        // Strategy: build an ImmutableImpl DRM directly from the static
+        // Registries.ENTITY_TYPE registry. After Bootstrap.initialize() runs
+        // (always true in the Fabric client), this registry is fully populated.
+        // In unit tests that skip Bootstrap, the registry is empty — we detect
+        // this via size() and fall back to passthrough on ADD_ENTITY only.
+        DynamicRegistryManager drm;
+        boolean decodeOk;
+        try {
+            Registry<?> entityTypeRegistry = Registries.ENTITY_TYPE;
+            drm = new DynamicRegistryManager.ImmutableImpl(List.<Registry<?>>of(entityTypeRegistry));
+            decodeOk = entityTypeRegistry.size() > 0;
+            if (!decodeOk) {
+                LOG.fine("EntityPacketRewriter: Registries.ENTITY_TYPE is empty "
+                        + "(Bootstrap not initialized?); ADD_ENTITY decode disabled.");
+            }
+        } catch (Throwable t) {
+            LOG.warning("EntityPacketRewriter: failed to build DynamicRegistryManager ("
+                    + t.getClass().getSimpleName() + ": " + t.getMessage()
+                    + "); ADD_ENTITY decode disabled.");
+            drm = DynamicRegistryManager.EMPTY;
+            decodeOk = false;
+        }
+        this.registryManager = drm;
+        this.addEntityDecodeAvailable = decodeOk;
     }
 
     /**
@@ -159,6 +209,12 @@ public final class EntityPacketRewriter {
 
         try {
             if (pid == idAddEntity) {
+                // ADD_ENTITY requires a populated minecraft:entity_type registry.
+                // If unavailable (unit test without Bootstrap), pass through unchanged:
+                // the entity stays with its source-local ID, but at least playback
+                // does not crash. In the real Fabric runtime Registries.ENTITY_TYPE
+                // is always populated.
+                if (!addEntityDecodeAvailable) return payload;
                 return rewriteAddEntity(sourceIdx, tickAbs, payload);
             } else if (pid == idRemoveEntities) {
                 return rewriteRemoveEntities(sourceIdx, payload);
@@ -234,8 +290,14 @@ public final class EntityPacketRewriter {
 
     /**
      * Rewrites ADD_ENTITY (EntitySpawnS2CPacket) using the MC codec for full decode.
-     * Uses RegistryByteBuf with DynamicRegistryManager.EMPTY — the EntityType uses
-     * vanilla static registry (EntityType.PACKET_CODEC), which works without DRM.
+     *
+     * <p>Uses a {@link RegistryByteBuf} bound to {@link #registryManager}, which
+     * contains the populated {@code minecraft:entity_type} registry — required
+     * by {@code EntitySpawnS2CPacket.CODEC} via {@code PacketCodecs.registryValue}.
+     *
+     * <p>Must only be called when {@link #addEntityDecodeAvailable} is {@code true};
+     * otherwise the registry lookup would throw
+     * {@code "Missing registry: minecraft:entity_type"}.
      */
     private byte[] rewriteAddEntity(int sourceIdx, int tickAbs, byte[] payload) {
         ByteBuf raw = Unpooled.wrappedBuffer(payload);
@@ -247,7 +309,7 @@ public final class EntityPacketRewriter {
 
         // Decode body with EntitySpawnS2CPacket.CODEC
         ByteBuf bodyBuf = raw.slice(bodyStart, raw.readableBytes());
-        RegistryByteBuf registryBuf = new RegistryByteBuf(bodyBuf, DynamicRegistryManager.EMPTY);
+        RegistryByteBuf registryBuf = new RegistryByteBuf(bodyBuf, registryManager);
 
         EntitySpawnS2CPacket spawn = EntitySpawnS2CPacket.CODEC.decode(registryBuf);
 
@@ -284,7 +346,7 @@ public final class EntityPacketRewriter {
         out.writeBytes(payload, packetIdStart, bodyStart - packetIdStart);
         // Encode remapped packet body
         ByteBuf newBodyBuf = Unpooled.buffer(payload.length);
-        RegistryByteBuf outRegistryBuf = new RegistryByteBuf(newBodyBuf, DynamicRegistryManager.EMPTY);
+        RegistryByteBuf outRegistryBuf = new RegistryByteBuf(newBodyBuf, registryManager);
         EntitySpawnS2CPacket.CODEC.encode(outRegistryBuf, remapped);
         out.writeBytes(newBodyBuf);
 
