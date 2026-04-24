@@ -2,6 +2,42 @@
 
 Toutes les modifications notables apparaissent ici. Format basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.2.0] — 2026-04-22
+
+Deuxième version. Correctifs majeurs sur la fusion multi-POV.
+
+### Corrections critiques
+
+- **Chunks manquants fixés** (`801bcf0`) : `PlayerRespawnS2CPacket` et `GameJoinS2CPacket` routés en `EGO` primary-only. Avant, les sources secondaires traînaient le client dans leur dimension, faisant silencieusement dropper les chunks du primary par Flashback.
+- **ENTITY dedup réactivé** (`e77bc2d`) : `EntityPacketRewriter` utilise maintenant un `DynamicRegistryManager.ImmutableImpl(List.of(Registries.ENTITY_TYPE))` au runtime. Plus de doublons d'entités.
+- **Secondary POV toujours visibles** (`12fdfee`) : `SecondaryPlayerSynthesizer` synthétise `PlayerInfoUpdate(ADD_PLAYER)` + `AddEntity(PLAYER)` pour chaque POV secondaire. Leur position est mise à jour via `accurate_player_position` et `PLAYER_POSITION` retraduits en `TeleportEntity`.
+- **WORLD LWW réactivé** (`ae4dabd`) : `WorldPacketRewriter` gère maintenant les `BlockUpdate` et `SectionBlocksUpdate` via `WorldStateMerger` pour arbitrage last-write-wins. Fin des flickers sur blocs cassés/reposés.
+
+### Autres améliorations
+
+- `SET_CHUNK_CACHE_CENTER`, `RADIUS`, `SIMULATION_DISTANCE` classifiés EGO (primary-only).
+- Flashback action `accurate_player_position_optional` routée en `LOCAL_PLAYER` (primary-only).
+- Markers (`Changed Dimension`, etc.) agrégés depuis toutes les sources dans le replay fusionné.
+- Output splits en segments de 6000 ticks avec snapshot riche dans chaque `cN.flashback`.
+- `FORGET_LEVEL_CHUNK` et `REMOVE_ENTITIES` filtrés primary-only (plus de flickers de chunks/entités observés par plusieurs POV).
+- `LEVEL_CHUNK_WITH_LIGHT` dedupliqué par hash de contenu.
+
+### UI
+
+- Cases à cocher individuelles sur chaque replay (remplace le toggle multi-select).
+- Progress bar avec pourcentage + phase text dans le `MergeProgressScreen`.
+- Liste de replays auto-refresh après un merge.
+- Noms des merges raccourcis : `merged_<timestamp>.zip`.
+
+### Limitations connues restantes
+
+- Fusion à 4+ POV : fonctionnelle avec de légères imperfections visuelles possibles (chunks observés par plusieurs POV avec versions conflictuelles).
+- Dimensions multiples : la caméra suit uniquement les changements de dim du primary. Les POV secondaires dans une autre dimension apparaissent à la mauvaise position (pas de tracker de dimension par source).
+
+### Tests : 127 verts (121 Phase 0.1 + 6 nouveaux pour SecondaryPlayerSynthesizer).
+
+[0.2.0]: https://github.com/Zeffut/MultiView/releases/tag/v0.2.0
+
 ## [0.1.0] — 2026-04-22
 
 Première version publique. Fusion de N replays Flashback en un seul replay unifié.
