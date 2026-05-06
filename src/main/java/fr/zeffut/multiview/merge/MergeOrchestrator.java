@@ -18,7 +18,6 @@ import io.netty.buffer.Unpooled;
 import net.minecraft.network.PacketByteBuf;
 import net.minecraft.network.packet.PlayPackets;
 import net.minecraft.network.packet.s2c.play.PlayerPositionLookS2CPacket;
-import net.minecraft.registry.DynamicRegistryManager;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -35,7 +34,8 @@ import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.UUID;
 import java.util.function.Consumer;
-import java.util.logging.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -51,8 +51,7 @@ import java.util.zip.ZipOutputStream;
  */
 public final class MergeOrchestrator {
 
-    private static final java.util.logging.Logger LOG =
-            java.util.logging.Logger.getLogger(MergeOrchestrator.class.getName());
+    private static final Logger LOG = LoggerFactory.getLogger(MergeOrchestrator.class);
 
     private MergeOrchestrator() {}
 
@@ -61,26 +60,35 @@ public final class MergeOrchestrator {
      * @param progress callback(phaseName) pour feedback UI
      * @return MergeReport final
      */
+    /** Maximum total uncompressed size when extracting source zips (zip-bomb guard). */
+    private static final long MAX_EXTRACTED_SOURCE_BYTES = 5L * 1024L * 1024L * 1024L; // 5 GB
+
     public static MergeReport run(MergeOptions options, Consumer<String> progress)
             throws IOException {
+        // Validate inputs early — at least 2 sources required for a merge to be meaningful.
+        if (options.sources() == null || options.sources().size() < 2) {
+            throw new IllegalArgumentException(
+                    "Merge requires at least 2 sources, got "
+                            + (options.sources() == null ? 0 : options.sources().size()));
+        }
+
         MergeReport report = new MergeReport();
 
         // destTmp declared before try so the catch block can clean it up
         Path destTmp = null;
+        // Partial output written under .part suffix; renamed atomically only on success.
+        Path destPart = null;
         List<Path> tempExtractDirs = new ArrayList<>();
 
         try {
-            // Check destination before opening sources
-            // The actual output is destFinal + ".zip"; destFinal is used only as base name.
+            // Check destination before opening sources.
+            // Existing zip is NOT deleted up-front: we write to a .part file and atomic-move
+            // at the end, so a failed merge cannot destroy a previously-good zip.
             Path destFinal = options.destination();
             Path destZipCheck = destFinal.resolveSibling(destFinal.getFileName() + ".zip");
-            if (Files.exists(destZipCheck)) {
-                if (options.force()) {
-                    Files.delete(destZipCheck);
-                } else {
-                    throw new IOException("Destination already exists: " + destZipCheck
-                            + ". Use --force (not yet exposed via CLI).");
-                }
+            if (Files.exists(destZipCheck) && !options.force()) {
+                throw new IOException("Destination already exists: " + destZipCheck
+                        + ". Use --force (not yet exposed via CLI).");
             }
 
             // 1. Open sources — extract zips to temp folders since FlashbackReader reads folders
@@ -91,16 +99,40 @@ public final class MergeOrchestrator {
                 if (Files.isRegularFile(src) && src.getFileName().toString().endsWith(".zip")) {
                     Path tempDir = Files.createTempDirectory("multiview-source-");
                     tempExtractDirs.add(tempDir);
+                    long totalExtracted = 0L;
                     try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(
                             Files.newInputStream(src))) {
                         java.util.zip.ZipEntry entry;
+                        Path tempDirNorm = tempDir.toAbsolutePath().normalize();
                         while ((entry = zis.getNextEntry()) != null) {
-                            Path out = tempDir.resolve(entry.getName());
+                            // Zip-slip guard: ensure the resolved entry stays inside tempDir.
+                            Path out = tempDir.resolve(entry.getName()).toAbsolutePath().normalize();
+                            if (!out.startsWith(tempDirNorm)) {
+                                throw new IOException(
+                                        "Refusing to extract zip entry outside of temp dir (zip-slip): "
+                                                + entry.getName());
+                            }
                             if (entry.isDirectory()) {
                                 Files.createDirectories(out);
                             } else {
                                 Files.createDirectories(out.getParent());
-                                Files.copy(zis, out, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                                // Stream copy with running byte counter (zip-bomb guard).
+                                try (OutputStream os = Files.newOutputStream(out,
+                                        java.nio.file.StandardOpenOption.CREATE,
+                                        java.nio.file.StandardOpenOption.TRUNCATE_EXISTING)) {
+                                    byte[] buf = new byte[64 * 1024];
+                                    int n;
+                                    while ((n = zis.read(buf)) > 0) {
+                                        totalExtracted += n;
+                                        if (totalExtracted > MAX_EXTRACTED_SOURCE_BYTES) {
+                                            throw new IOException(
+                                                    "Source zip uncompressed size exceeds limit ("
+                                                            + MAX_EXTRACTED_SOURCE_BYTES
+                                                            + " bytes): " + src);
+                                        }
+                                        os.write(buf, 0, n);
+                                    }
+                                }
                             }
                         }
                     }
@@ -175,7 +207,6 @@ public final class MergeOrchestrator {
             WorldStateMerger worldMerger = new WorldStateMerger();
             WorldPacketRewriter worldRewriter = new WorldPacketRewriter(worldMerger);
             GlobalDeduper globalDeduper = new GlobalDeduper();
-            CacheRemapper cacheRemapper = new CacheRemapper();
             PacketClassifier classifier = new PacketClassifier(
                     GamePacketDispatch.buildOrFallback(report));
             SecondaryPlayerSynthesizer secondarySynth = new SecondaryPlayerSynthesizer(idRemapper);
@@ -227,7 +258,7 @@ public final class MergeOrchestrator {
             progress.accept("Streaming merge...");
             Map<String, Integer> segmentDurations = streamMerge(
                     ctx, classifier, worldMerger, worldRewriter, entityMerger, entityRewriter,
-                    idRemapper, globalDeduper, cacheRemapper, povTracker, secondarySynth,
+                    idRemapper, globalDeduper, povTracker, secondarySynth,
                     fileOffset, destTmp, progress);
 
             // Step A: Write merged metadata.json
@@ -252,18 +283,31 @@ public final class MergeOrchestrator {
                 new GsonBuilder().setPrettyPrinting().create().toJson(report, w);
             }
 
-            // Step D: Package .tmp/ → destFinal.zip
+            // Step D: Package .tmp/ → destFinal.zip via a .part file then atomic move.
+            // Rationale: writing directly to destZip would leave a corrupt/truncated zip on crash.
+            // Writing to a .part file first preserves any pre-existing destZip until the new
+            // archive is fully fsync'd and renamed atomically.
             Path destZip = destFinal.resolveSibling(destFinal.getFileName() + ".zip");
-            if (Files.exists(destZip)) {
-                if (options.force()) {
-                    Files.delete(destZip);
-                } else {
-                    throw new IOException("Destination already exists: " + destZip
-                            + ". Pass --force to overwrite.");
-                }
-            }
+            destPart = destFinal.resolveSibling(destFinal.getFileName() + ".zip.part");
+            // Stale .part from a previous failed run — safe to remove (we own the .part suffix).
+            Files.deleteIfExists(destPart);
+
             progress.accept("Packaging zip...");
-            zipDirectory(destTmp, destZip);
+            zipDirectory(destTmp, destPart);
+
+            // Atomic rename. If destZip exists, replace it (--force already validated above).
+            try {
+                Files.move(destPart, destZip,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException atomicNotSupported) {
+                // Some filesystems (e.g. cross-device) don't support ATOMIC_MOVE+REPLACE_EXISTING.
+                // Fall back to non-atomic replace: still safer than the previous "delete-first" path.
+                Files.move(destPart, destZip,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            destPart = null;
+
             // Zip succeeded — clean up tmp dir
             deleteRecursively(destTmp);
             destTmp = null; // don't delete on catch
@@ -281,12 +325,11 @@ public final class MergeOrchestrator {
             if (destTmp != null && Files.exists(destTmp)) {
                 deleteRecursively(destTmp);
             }
-            // Rollback partial zip if it exists
-            Path destZip = options.destination().resolveSibling(
-                    options.destination().getFileName() + ".zip");
-            try {
-                Files.deleteIfExists(destZip);
-            } catch (IOException ignore) {}
+            // Rollback only our partial .part file. The pre-existing destZip (if any) is
+            // intentionally preserved — atomic-move semantics mean it was never touched.
+            if (destPart != null) {
+                try { Files.deleteIfExists(destPart); } catch (IOException ignore) {}
+            }
             // Clean up zip-extracted source temp dirs
             for (Path td : tempExtractDirs) {
                 try { deleteRecursively(td); } catch (IOException ignore) {}
@@ -457,7 +500,7 @@ public final class MergeOrchestrator {
                                     WorldStateMerger worldMerger, WorldPacketRewriter worldRewriter,
                                     EntityMerger entityMerger,
                                     EntityPacketRewriter entityRewriter, IdRemapper idRemapper,
-                                    GlobalDeduper globalDeduper, CacheRemapper cacheRemapper,
+                                    GlobalDeduper globalDeduper,
                                     SourcePovTracker povTracker,
                                     SecondaryPlayerSynthesizer secondarySynth,
                                     int[] fileOffset, Path destTmp,
@@ -484,15 +527,21 @@ public final class MergeOrchestrator {
         List<Path> primarySegments = ctx.sources.get(ctx.primarySourceIdx).segmentPaths();
         if (!primarySegments.isEmpty()) {
             Path firstSeg = primarySegments.get(0);
-            byte[] firstSegBytes = Files.readAllBytes(firstSeg);
-            FlashbackByteBuf firstSegBuf = new FlashbackByteBuf(
-                    io.netty.buffer.Unpooled.wrappedBuffer(firstSegBytes));
-            SegmentReader snapshotReader = new SegmentReader(
-                    firstSeg.getFileName().toString(), firstSegBuf);
-            while (snapshotReader.hasNext() && snapshotReader.isPeekInSnapshot()) {
-                SegmentReader.RawAction raw = snapshotReader.nextRaw();
-                currentWriter.writeSnapshotAction(raw.ordinal(), raw.payload());
-                snapshotActionsCopied++;
+            // Memory-map the first segment so we don't load potentially hundreds of MB into the
+            // heap just to read the snapshot section at its head.
+            try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(firstSeg,
+                    java.nio.file.StandardOpenOption.READ)) {
+                java.nio.ByteBuffer mapped = ch.map(
+                        java.nio.channels.FileChannel.MapMode.READ_ONLY, 0L, ch.size());
+                FlashbackByteBuf firstSegBuf = new FlashbackByteBuf(
+                        io.netty.buffer.Unpooled.wrappedBuffer(mapped));
+                SegmentReader snapshotReader = new SegmentReader(
+                        firstSeg.getFileName().toString(), firstSegBuf);
+                while (snapshotReader.hasNext() && snapshotReader.isPeekInSnapshot()) {
+                    SegmentReader.RawAction raw = snapshotReader.nextRaw();
+                    currentWriter.writeSnapshotAction(raw.ordinal(), raw.payload());
+                    snapshotActionsCopied++;
+                }
             }
         }
         progress.accept(String.format("Transferred %d snapshot actions from primary source's first segment",
@@ -518,15 +567,12 @@ public final class MergeOrchestrator {
         // payloads from that source are rewritten to target the fake entity ID.
         // `secondarySpawned[sourceIdx]` : spawn packets already emitted
         // `secondaryFakeEntityId[sourceIdx]` : global entity ID allocated for the fake player
-        // `secondaryLocalEntityId[sourceIdx]` : real local entity ID (discovered from first
-        //                                      accurate_player_position payload), registered
-        //                                      with the IdRemapper so subsequent entity-tracking
-        //                                      packets referencing this ID are remapped.
+        // The real local entity ID is discovered from the first accurate_player_position
+        // payload of each secondary and registered with the IdRemapper so subsequent
+        // entity-tracking packets referencing this ID are remapped automatically.
         boolean[] secondarySpawned = new boolean[ctx.sources.size()];
         int[] secondaryFakeEntityId = new int[ctx.sources.size()];
-        int[] secondaryLocalEntityId = new int[ctx.sources.size()];
         java.util.Arrays.fill(secondaryFakeEntityId, -1);
-        java.util.Arrays.fill(secondaryLocalEntityId, -1);
 
         // Numeric ID of PLAYER_POSITION packet, for translating secondary EGO teleports
         int idPlayerPosition = -1;
@@ -539,7 +585,7 @@ public final class MergeOrchestrator {
             idRemoveEntities = GamePacketDispatch.findId(PlayPackets.REMOVE_ENTITIES);
             idLevelChunkWithLight = GamePacketDispatch.findId(PlayPackets.LEVEL_CHUNK_WITH_LIGHT);
         } catch (Throwable t) {
-            LOG.warning("MergeOrchestrator: could not resolve special packet ids: "
+            LOG.warn("MergeOrchestrator: could not resolve special packet ids: "
                     + t.getClass().getSimpleName());
         }
         // Track which chunks have already been emitted, keyed by content hash.
@@ -597,6 +643,19 @@ public final class MergeOrchestrator {
                         warnedOutOfOrder = true;
                     }
                     ctx.report.stats.outOfOrderPackets++;
+                }
+
+                // Sanity bound: a packet whose absolute tick is wildly beyond the planned merged
+                // duration would force `while (tickAbsEmitted < tickAbs)` to intercalate millions
+                // of NextTicks (and roll over thousands of segments). Cap with a generous slack and
+                // abort with an actionable message if the bound is exceeded.
+                int sanityBound = Math.max(2 * SEGMENT_TICKS,
+                        ctx.report.mergedTotalTicks + (ctx.report.mergedTotalTicks / 10) + SEGMENT_TICKS);
+                if (tickAbs > sanityBound) {
+                    throw new IOException(String.format(
+                            "Packet tick %d exceeds sanity bound %d (mergedTotalTicks=%d) — "
+                                    + "likely bad alignment offset on source %d",
+                            tickAbs, sanityBound, ctx.report.mergedTotalTicks, cur.sourceIdx()));
                 }
 
                 // Segment boundary check: if we've accumulated SEGMENT_TICKS ticks in the current
@@ -694,7 +753,7 @@ public final class MergeOrchestrator {
                                     secondarySpawned[cur.sourceIdx()] = true;
                                     secondaryFakeEntityId[cur.sourceIdx()] = fakeId;
                                 } else {
-                                    LOG.warning("MergeOrchestrator: secondary player synthesis "
+                                    LOG.warn("MergeOrchestrator: secondary player synthesis "
                                             + "failed for source " + cur.sourceIdx()
                                             + " — player will remain invisible.");
                                 }
@@ -713,8 +772,8 @@ public final class MergeOrchestrator {
                                 // through the standard IdRemapper path.
                                 int localEid = SecondaryPlayerSynthesizer
                                         .readAccuratePositionEntityId(u.payload());
-                                if (localEid >= 0 && secondaryLocalEntityId[cur.sourceIdx()] < 0) {
-                                    secondaryLocalEntityId[cur.sourceIdx()] = localEid;
+                                if (localEid >= 0
+                                        && !idRemapper.contains(cur.sourceIdx(), localEid)) {
                                     idRemapper.assignExisting(cur.sourceIdx(), localEid,
                                             secondaryFakeEntityId[cur.sourceIdx()]);
                                 }
@@ -904,7 +963,13 @@ public final class MergeOrchestrator {
             ctx.report.stats.blocksLwwConflicts   = worldMerger.lwwConflicts();
             ctx.report.stats.blocksLwwOverwrites  = worldMerger.lwwOverwrites();
         } finally {
-            // 3. Close all source streams — guaranteed on any exception path
+            // 3. Close the current SegmentWriter (releases FileChannel + Netty buffers).
+            // Calling close() is a no-op if finishStreaming() already ran; otherwise it
+            // ensures we don't leak a file handle on the error path.
+            if (currentWriter != null) {
+                try { currentWriter.close(); } catch (Exception ignore) {}
+            }
+            // 4. Close all source streams — guaranteed on any exception path
             for (Stream<PacketEntry> s : streams) {
                 try {
                     s.close();
@@ -1014,9 +1079,10 @@ public final class MergeOrchestrator {
         final int finalCopied = copiedCount;
         final int finalDropped = droppedCount;
         final int finalSegIdx = targetSegmentIndex;
-        LOG.fine(() -> "copyPrimarySnapshotForTick: absTick=" + absTick
-                + " → segment[" + finalSegIdx + "]=" + segPath.getFileName()
-                + " copied=" + finalCopied + " dropped=" + finalDropped);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("copyPrimarySnapshotForTick: absTick={} → segment[{}]={} copied={} dropped={}",
+                    absTick, finalSegIdx, segPath.getFileName(), finalCopied, finalDropped);
+        }
     }
 
     /**

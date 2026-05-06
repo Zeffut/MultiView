@@ -22,6 +22,13 @@ public final class FlashbackByteBuf {
 
     public String readString() {
         int length = readVarInt();
+        if (length < 0) {
+            throw new IllegalStateException("Negative string length " + length);
+        }
+        if (length > underlying.readableBytes()) {
+            throw new IllegalStateException(
+                    "String length " + length + " exceeds remaining " + underlying.readableBytes());
+        }
         byte[] bytes = new byte[length];
         underlying.readBytes(bytes);
         return new String(bytes, StandardCharsets.UTF_8);
@@ -32,6 +39,13 @@ public final class FlashbackByteBuf {
     }
 
     public byte[] readBytes(int length) {
+        if (length < 0) {
+            throw new IllegalStateException("Negative byte length " + length);
+        }
+        if (length > underlying.readableBytes()) {
+            throw new IllegalStateException(
+                    "Byte length " + length + " exceeds remaining " + underlying.readableBytes());
+        }
         byte[] out = new byte[length];
         underlying.readBytes(out);
         return out;

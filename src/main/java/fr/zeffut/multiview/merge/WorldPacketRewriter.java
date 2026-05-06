@@ -16,7 +16,8 @@ import net.minecraft.util.math.ChunkSectionPos;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.logging.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Rewrites WORLD GamePacket payloads to enforce LWW (last-write-wins) arbitration on
@@ -49,7 +50,7 @@ import java.util.logging.Logger;
  */
 public final class WorldPacketRewriter {
 
-    private static final Logger LOG = Logger.getLogger(WorldPacketRewriter.class.getName());
+    private static final Logger LOG = LoggerFactory.getLogger(WorldPacketRewriter.class);
 
     /** Hardcoded dimension for Phase 4.E — see class-level Javadoc for the rationale. */
     private static final String DIMENSION_OVERWORLD = "minecraft:overworld";
@@ -75,7 +76,7 @@ public final class WorldPacketRewriter {
             idSectionBlocksUpdate = GamePacketDispatch.findId(PlayPackets.SECTION_BLOCKS_UPDATE);
             fb = false;
         } catch (Throwable t) {
-            LOG.warning("WorldPacketRewriter: PlayStateFactories unavailable ("
+            LOG.warn("WorldPacketRewriter: PlayStateFactories unavailable ("
                     + t.getClass().getSimpleName() + "), block LWW disabled (fallback passthrough).");
             fb = true;
         }
@@ -106,7 +107,7 @@ public final class WorldPacketRewriter {
                 return payload;
             }
         } catch (Exception e) {
-            LOG.warning("WorldPacketRewriter: failed to rewrite packetId=" + pid
+            LOG.warn("WorldPacketRewriter: failed to rewrite packetId=" + pid
                     + " from source=" + sourceIdx + ": " + e.getMessage());
             // On decode failure, pass through (safe fallback)
             return payload;

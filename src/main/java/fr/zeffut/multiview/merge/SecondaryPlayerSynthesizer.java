@@ -19,7 +19,8 @@ import com.mojang.authlib.GameProfile;
 
 import java.util.Set;
 import java.util.UUID;
-import java.util.logging.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Synthesizes MC packets that make a secondary POV player visible as a regular
@@ -45,7 +46,7 @@ import java.util.logging.Logger;
  */
 public final class SecondaryPlayerSynthesizer {
 
-    private static final Logger LOG = Logger.getLogger(SecondaryPlayerSynthesizer.class.getName());
+    private static final Logger LOG = LoggerFactory.getLogger(SecondaryPlayerSynthesizer.class);
 
     /** True when MC codec lookup failed — all synthesis is disabled. */
     private final boolean fallbackMode;
@@ -68,7 +69,7 @@ public final class SecondaryPlayerSynthesizer {
             teId  = GamePacketDispatch.findId(PlayPackets.TELEPORT_ENTITY);
             fb = false;
         } catch (Throwable t) {
-            LOG.warning("SecondaryPlayerSynthesizer: codec init failed ("
+            LOG.warn("SecondaryPlayerSynthesizer: codec init failed ("
                     + t.getClass().getSimpleName() + ") — secondary player synthesis disabled.");
             fb = true;
         }
@@ -154,7 +155,7 @@ public final class SecondaryPlayerSynthesizer {
                 return profile;
             }
         } catch (Throwable t) {
-            LOG.fine("SecondaryPlayerSynthesizer: could not extract GameProfile from CreatePlayer payload: "
+            LOG.debug("SecondaryPlayerSynthesizer: could not extract GameProfile from CreatePlayer payload: "
                     + t.getMessage() + " — using placeholder name");
         }
 
@@ -209,7 +210,7 @@ public final class SecondaryPlayerSynthesizer {
 
             return prependPacketId(idPlayerInfoUpdate, body);
         } catch (Throwable t) {
-            LOG.warning("SecondaryPlayerSynthesizer: PlayerInfoUpdate synthesis failed: " + t.getMessage());
+            LOG.warn("SecondaryPlayerSynthesizer: PlayerInfoUpdate synthesis failed: " + t.getMessage());
             return null;
         }
     }
@@ -249,7 +250,7 @@ public final class SecondaryPlayerSynthesizer {
 
             return prependPacketId(idAddEntity, body);
         } catch (Throwable t) {
-            LOG.warning("SecondaryPlayerSynthesizer: AddEntity synthesis failed: " + t.getMessage());
+            LOG.warn("SecondaryPlayerSynthesizer: AddEntity synthesis failed: " + t.getMessage());
             return null;
         }
     }
@@ -302,7 +303,7 @@ public final class SecondaryPlayerSynthesizer {
 
             return prependPacketId(idTeleportEntity, body);
         } catch (Throwable t) {
-            LOG.warning("SecondaryPlayerSynthesizer: TeleportEntity synthesis failed: " + t.getMessage());
+            LOG.warn("SecondaryPlayerSynthesizer: TeleportEntity synthesis failed: " + t.getMessage());
             return null;
         }
     }
@@ -362,7 +363,7 @@ public final class SecondaryPlayerSynthesizer {
             out.readBytes(result);
             return result;
         } catch (Throwable t) {
-            LOG.warning("SecondaryPlayerSynthesizer: rewriteAccuratePositionEntityId failed: "
+            LOG.warn("SecondaryPlayerSynthesizer: rewriteAccuratePositionEntityId failed: "
                     + t.getMessage());
             return payload;
         }

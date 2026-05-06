@@ -2,7 +2,58 @@
 
 Toutes les modifications notables apparaissent ici. Format basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
-## [0.2.0] — 2026-04-22
+## [0.2.5] — 2026-05-06
+
+Audit de qualité — durcissement de la sécurité, fiabilité du rollback, instrumentation. Aucun changement du pipeline merge lui-même : la logique de dedup d'entités v0.2.0 est conservée (testée fonctionnelle en runtime). Les issues entity-dedup multi-POV restent comme limitations connues.
+
+### Sécurité
+
+- **Zip-slip** : extraction des sources `.zip` valide désormais que les entrées ne sortent pas du dossier temporaire.
+- **Zip-bomb** : limite de 5 GB sur la taille décompressée d'un source `.zip`.
+- **`SegmentReader`** : validation `payloadSize`, `registry count`, `id length`, `snapshotSize` — refuse les valeurs négatives ou aberrantes (évite OOM sur segment corrompu).
+- **`FlashbackByteBuf`** : `readBytes` / `readString` valident la longueur (négatif ou > readableBytes → throw clair).
+
+### Robustesse
+
+- **Rollback atomique** : le merge écrit dans `.part` puis `Files.move(ATOMIC_MOVE, REPLACE_EXISTING)`. Un crash en cours de zipping ne détruit plus l'ancien zip de destination.
+- **`SegmentWriter`** implémente `AutoCloseable` ; `streamMerge` le ferme dans un `finally`. Plus de fuite de FileChannel/buffer Netty sur l'erreur.
+- **`WorldStateMerger.blockKey`** : record `(dimId, x, y, z)` → bijection garantie (le bit-packing précédent collisionnait silencieusement sur coords arbitraires).
+- **NextTick sanity bound** : abort propre si un packet remonte un tick aberrant (évite l'intercalation infinie de NextTicks).
+- **Validation `≥ 2 sources`** dès le début de `MergeOrchestrator.run`.
+- **`TimelineAligner.varIntLength` / `readGameTime`** : retournent -1 sur payload tronqué au lieu de throw.
+- **`FlashbackMetadata.fromJson`** throw `IllegalArgumentException` sur metadata vide/invalide.
+
+### Observabilité
+
+- Migration `java.util.logging` → SLF4J : `MergeOrchestrator`, `EntityPacketRewriter`, `WorldPacketRewriter`, `SecondaryPlayerSynthesizer`, `MergeCommand`. Les warnings remontent dans `latest.log`.
+- `MergeCommand` : `t.printStackTrace()` → `LOG.error(...)`.
+
+### Mémoire
+
+- Lecture du snapshot du primary via `FileChannel.map` (au lieu de `Files.readAllBytes`) — évite de charger un segment de plusieurs centaines de Mo en heap.
+
+### Build / packaging
+
+- `fabric.mod.json` : `flashback` passe de `suggests` à `depends ">=0.39.0 <0.40"`.
+- `minecraft` resserré à `">=1.21.11 <1.22"` ; `fabric-api ">=0.141.0"`.
+- Référence vide à `multiview.mixins.json` retirée (aucune mixin n'est écrite).
+- Champ `contact.issues` ajouté.
+
+### Outils
+
+- Nouveau `fr.zeffut.multiview.tools.MergeInspector` — diagnostic standalone qui scanne un `.flashback` mergé et reporte gaps de ticks, bursts par packetId, lifecycle entité, anomalies de segments. Usage : `java -cp ... fr.zeffut.multiview.tools.MergeInspector <merged.zip> [--deep]`.
+
+### Cleanup
+
+- `CacheRemapper` (et son test) supprimé : code mort.
+- Tableau dead `secondaryLocalEntityId[]` remplacé par un `idRemapper.contains()` direct.
+
+### Limitations connues (inchangées par cette release)
+
+- **Doublons "joined the game" dans le chat** : les `PlayerInfoUpdate(ADD_PLAYER)` ne sont pas dédupliqués cross-source. MC les ignore poliment (`Ignoring player info update for unknown player`), pas de crash.
+- **Bursts d'activité physique** : un événement intense observé par tous les POV (combat, explosion, edits massifs) peut causer un freeze visuel court (~2300 actions/tick). Cause-racine = pas de dedup `MOVE_ENTITY` cross-source — plan pour 0.3.
+
+## [0.2.0] — 2026-05-06
 
 Deuxième version. Correctifs majeurs sur la fusion multi-POV.
 
@@ -36,6 +87,7 @@ Deuxième version. Correctifs majeurs sur la fusion multi-POV.
 
 ### Tests : 127 verts (121 Phase 0.1 + 6 nouveaux pour SecondaryPlayerSynthesizer).
 
+[0.2.5]: https://github.com/Zeffut/MultiView/releases/tag/v0.2.5
 [0.2.0]: https://github.com/Zeffut/MultiView/releases/tag/v0.2.0
 
 ## [0.1.0] — 2026-04-22

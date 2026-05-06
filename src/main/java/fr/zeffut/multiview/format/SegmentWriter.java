@@ -37,7 +37,7 @@ import java.util.List;
  *
  * <p>Non thread-safe. Usage single-pass.
  */
-public final class SegmentWriter {
+public final class SegmentWriter implements AutoCloseable {
     private final String segmentName;
     private final List<String> registry;
     private final ByteBuf header;
@@ -231,13 +231,39 @@ public final class SegmentWriter {
             throw new IllegalStateException("finishStreaming() already called on " + segmentName);
         }
         finished = true;
-        streamingChannel.force(true);
-        streamingChannel.close();
-        streamingChannel = null;
+        try {
+            streamingChannel.force(true);
+        } finally {
+            // Always release native resources, even if force() throws.
+            try { streamingChannel.close(); } catch (IOException ignore) {}
+            streamingChannel = null;
+            if (header.refCnt() > 0) header.release();
+            if (snapshot.refCnt() > 0) snapshot.release();
+            if (live != null && live.refCnt() > 0) {
+                live.release();
+                live = null;
+            }
+        }
+    }
 
-        // Release in-memory buffers
-        header.release();
-        snapshot.release();
+    /**
+     * Best-effort cleanup. Safe to call multiple times and from a {@code finally} block,
+     * even if {@link #finishStreaming()} or {@link #finish()} were not called (e.g. on error).
+     * Does not flush — assumes a prior failure means the on-disk state is already invalid.
+     */
+    @Override
+    public void close() {
+        if (streamingChannel != null) {
+            try { streamingChannel.close(); } catch (IOException ignore) {}
+            streamingChannel = null;
+        }
+        if (header.refCnt() > 0) header.release();
+        if (snapshot.refCnt() > 0) snapshot.release();
+        if (live != null && live.refCnt() > 0) {
+            live.release();
+            live = null;
+        }
+        finished = true;
     }
 
     public String segmentName() {

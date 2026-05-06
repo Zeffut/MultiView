@@ -41,6 +41,7 @@ public final class TimelineAligner {
                         int pid = readVarIntHead(payload);
                         if (pid != targetId) return null;
                         long gameTime = readGameTime(payload);
+                        if (gameTime < 0) return null; // truncated/malformed packet
                         return new SetTimeAnchor(e.tick(), gameTime);
                     })
                     .filter(a -> a != null)
@@ -60,9 +61,14 @@ public final class TimelineAligner {
         throw new IllegalArgumentException("VarInt trop long ou payload vide");
     }
 
-    /** Reads the long gameTime in a ClientboundSetTime after the VarInt packetId. */
+    /**
+     * Reads the long gameTime in a ClientboundSetTime after the VarInt packetId.
+     * Returns -1 if the payload is malformed or truncated.
+     */
     static long readGameTime(byte[] payload) {
+        if (payload == null || payload.length == 0) return -1L;
         int offset = varIntLength(payload);
+        if (offset < 0 || offset + 8 > payload.length) return -1L;
         long v = 0;
         for (int i = 0; i < 8; i++) {
             v = (v << 8) | (payload[offset + i] & 0xFF);
@@ -70,11 +76,14 @@ public final class TimelineAligner {
         return v;
     }
 
+    /** Returns the byte length of the leading VarInt, or -1 if the payload is malformed/truncated. */
     static int varIntLength(byte[] payload) {
-        for (int i = 0; i < 5; i++) {
+        if (payload == null) return -1;
+        int max = Math.min(5, payload.length);
+        for (int i = 0; i < max; i++) {
             if ((payload[i] & 0x80) == 0) return i + 1;
         }
-        return 5;
+        return -1;
     }
 
     public record Source(String label, Optional<SetTimeAnchor> anchor, String metadataName, int totalTicks) {}

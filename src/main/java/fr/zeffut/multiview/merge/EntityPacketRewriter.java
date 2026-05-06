@@ -13,7 +13,8 @@ import net.minecraft.registry.Registry;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.logging.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Rewrites ENTITY GamePacket payloads to remap local entity IDs to global IDs.
@@ -43,7 +44,7 @@ import java.util.logging.Logger;
  */
 public final class EntityPacketRewriter {
 
-    private static final Logger LOG = Logger.getLogger(EntityPacketRewriter.class.getName());
+    private static final Logger LOG = LoggerFactory.getLogger(EntityPacketRewriter.class);
 
     /**
      * If true, PlayStateFactories was not available and entity rewriting is disabled.
@@ -139,7 +140,7 @@ public final class EntityPacketRewriter {
             idTakeItemEntity    = GamePacketDispatch.findId(PlayPackets.TAKE_ITEM_ENTITY);
             fb = false;
         } catch (Throwable t) {
-            LOG.warning("EntityPacketRewriter: PlayStateFactories unavailable ("
+            LOG.warn("EntityPacketRewriter: PlayStateFactories unavailable ("
                     + t.getClass().getSimpleName() + "), entity rewriting disabled (fallback passthrough).");
             fb = true;
         }
@@ -161,11 +162,11 @@ public final class EntityPacketRewriter {
             drm = new DynamicRegistryManager.ImmutableImpl(List.<Registry<?>>of(entityTypeRegistry));
             decodeOk = entityTypeRegistry.size() > 0;
             if (!decodeOk) {
-                LOG.fine("EntityPacketRewriter: Registries.ENTITY_TYPE is empty "
+                LOG.debug("EntityPacketRewriter: Registries.ENTITY_TYPE is empty "
                         + "(Bootstrap not initialized?); ADD_ENTITY decode disabled.");
             }
         } catch (Throwable t) {
-            LOG.warning("EntityPacketRewriter: failed to build DynamicRegistryManager ("
+            LOG.warn("EntityPacketRewriter: failed to build DynamicRegistryManager ("
                     + t.getClass().getSimpleName() + ": " + t.getMessage()
                     + "); ADD_ENTITY decode disabled.");
             drm = DynamicRegistryManager.EMPTY;
@@ -236,7 +237,7 @@ public final class EntityPacketRewriter {
             }
         } catch (Exception e) {
             // If rewriting fails (e.g. entity not yet registered), log and pass through
-            LOG.warning("EntityPacketRewriter: failed to rewrite packetId=" + pid
+            LOG.warn("EntityPacketRewriter: failed to rewrite packetId=" + pid
                     + " from source=" + sourceIdx + ": " + e.getMessage());
             return payload;
         }
@@ -280,7 +281,7 @@ public final class EntityPacketRewriter {
             }
         } catch (Exception e) {
             // Non-fatal: POV tracking is best-effort
-            LOG.fine("EntityPacketRewriter: MoveEntities parse failed for POV tracking: " + e.getMessage());
+            LOG.debug("EntityPacketRewriter: MoveEntities parse failed for POV tracking: " + e.getMessage());
         }
     }
 
@@ -385,7 +386,7 @@ public final class EntityPacketRewriter {
         out.writeBytes(payload, packetIdStart, afterPid - packetIdStart);
         // count
         VarInts.writeVarInt(out, count);
-        // remapped IDs
+        // remapped IDs + unregister to allow same-UUID respawns (player leave→rejoin)
         for (int localId : localIds) {
             int globalId = idRemapper.contains(sourceIdx, localId)
                     ? idRemapper.remap(sourceIdx, localId)

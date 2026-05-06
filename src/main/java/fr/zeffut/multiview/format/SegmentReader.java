@@ -47,15 +47,33 @@ public final class SegmentReader implements Iterator<Action> {
         }
 
         int count = buf.readVarInt();
+        if (count < 0 || count > 65_536) {
+            throw new IllegalStateException(
+                    "Implausible registry size " + count + " in " + segmentName + " (corrupted?)");
+        }
         List<String> reg = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             int len = buf.readVarInt();
+            if (len < 0 || len > 4096) {
+                throw new IllegalStateException(
+                        "Implausible registry id length " + len + " at index " + i
+                                + " in " + segmentName);
+            }
+            if (len > buf.raw().readableBytes()) {
+                throw new IllegalStateException(
+                        "Registry id length " + len + " exceeds remaining "
+                                + buf.raw().readableBytes() + " bytes in " + segmentName);
+            }
             byte[] idBytes = buf.readBytes(len);
             reg.add(new String(idBytes, StandardCharsets.UTF_8));
         }
         this.registry = Collections.unmodifiableList(reg);
 
         int snapshotSize = buf.readInt();
+        if (snapshotSize < 0 || snapshotSize > buf.raw().readableBytes()) {
+            throw new IllegalStateException(
+                    "Implausible snapshotSize " + snapshotSize + " in " + segmentName);
+        }
         this.snapshotEndIndex = buf.readerIndex() + snapshotSize;
     }
 
@@ -92,6 +110,15 @@ public final class SegmentReader implements Iterator<Action> {
                             + registry.size() + ") in " + segmentName);
         }
         int payloadSize = buf.readInt();
+        if (payloadSize < 0) {
+            throw new IllegalStateException(
+                    "Negative payload size " + payloadSize + " in " + segmentName + " (corrupted segment?)");
+        }
+        if (payloadSize > buf.raw().readableBytes()) {
+            throw new IllegalStateException(
+                    "Payload size " + payloadSize + " exceeds remaining " + buf.raw().readableBytes()
+                            + " bytes in " + segmentName);
+        }
         byte[] payload = payloadSize > 0 ? buf.readBytes(payloadSize) : new byte[0];
         String id = registry.get(ordinal);
         return ActionType.decode(id, payload);
@@ -112,6 +139,15 @@ public final class SegmentReader implements Iterator<Action> {
                             + registry.size() + ") in " + segmentName);
         }
         int payloadSize = buf.readInt();
+        if (payloadSize < 0) {
+            throw new IllegalStateException(
+                    "Negative payload size " + payloadSize + " in " + segmentName + " (corrupted segment?)");
+        }
+        if (payloadSize > buf.raw().readableBytes()) {
+            throw new IllegalStateException(
+                    "Payload size " + payloadSize + " exceeds remaining " + buf.raw().readableBytes()
+                            + " bytes in " + segmentName);
+        }
         byte[] payload = payloadSize > 0 ? buf.readBytes(payloadSize) : new byte[0];
         return new RawAction(ordinal, payload);
     }

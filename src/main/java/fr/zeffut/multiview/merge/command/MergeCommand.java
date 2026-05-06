@@ -12,6 +12,8 @@ import fr.zeffut.multiview.merge.MergeReport;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.text.Text;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -23,6 +25,8 @@ import java.util.concurrent.Executors;
 import java.util.stream.Stream;
 
 public final class MergeCommand {
+
+    private static final Logger LOG = LoggerFactory.getLogger(MergeCommand.class);
 
     private static final ExecutorService EXECUTOR =
             Executors.newSingleThreadExecutor(r -> {
@@ -96,7 +100,7 @@ public final class MergeCommand {
                                 report.stats.blocksLwwOverwrites,
                                 report.stats.globalPacketsDeduped))));
             } catch (Throwable t) {
-                t.printStackTrace();
+                LOG.error("[MultiView] Merge failed", t);
                 MinecraftClient.getInstance().execute(() ->
                         source.sendError(Text.literal("[MultiView] Merge failed: " + t.getMessage())));
             }

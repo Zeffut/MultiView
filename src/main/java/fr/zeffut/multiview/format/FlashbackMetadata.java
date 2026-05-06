@@ -22,7 +22,12 @@ public final class FlashbackMetadata {
     @SerializedName("chunks") private Map<String, ChunkInfo> chunks = new LinkedHashMap<>();
 
     public static FlashbackMetadata fromJson(Reader reader) {
-        return new Gson().fromJson(reader, FlashbackMetadata.class);
+        FlashbackMetadata m = new Gson().fromJson(reader, FlashbackMetadata.class);
+        if (m == null) {
+            throw new IllegalArgumentException(
+                    "Empty or invalid metadata.json — cannot parse FlashbackMetadata");
+        }
+        return m;
     }
 
     public void toJson(java.io.Writer writer) {

@@ -15,8 +15,14 @@ public final class WorldStateMerger {
 
     private record BlockLww(int tickAbs, int blockStateId, int sourceIdx) {}
 
-    private final Map<Long, BlockLww> state = new HashMap<>();
-    private final Map<String, Long> dimensionIds = new HashMap<>();
+    /**
+     * Composite key (record) — eliminates bit-packing collisions for arbitrary int coordinates.
+     * Slightly higher per-entry cost than a packed {@code long} but bijective by construction.
+     */
+    private record BlockKey(int dimId, int x, int y, int z) {}
+
+    private final Map<BlockKey, BlockLww> state = new HashMap<>();
+    private final Map<String, Integer> dimensionIds = new HashMap<>();
     private int lwwConflicts;
     private int lwwOverwrites;
 
@@ -26,7 +32,7 @@ public final class WorldStateMerger {
      */
     public boolean acceptBlockUpdate(String dimension, int x, int y, int z,
                                      int tickAbs, int blockStateId, int sourceIdx) {
-        long key = blockKey(dimension, x, y, z);
+        BlockKey key = blockKey(dimension, x, y, z);
         BlockLww current = state.get(key);
 
         if (current == null) {
@@ -52,12 +58,8 @@ public final class WorldStateMerger {
     public int lwwConflicts() { return lwwConflicts; }
     public int lwwOverwrites() { return lwwOverwrites; }
 
-    private long blockKey(String dimension, int x, int y, int z) {
-        long dimId = dimensionIds.computeIfAbsent(dimension, k -> (long) dimensionIds.size() + 1);
-        long h = dimId;
-        h = h * 31 + x;
-        h = h * 31 + y;
-        h = h * 31 + z;
-        return h;
+    private BlockKey blockKey(String dimension, int x, int y, int z) {
+        int dimId = dimensionIds.computeIfAbsent(dimension, k -> dimensionIds.size() + 1);
+        return new BlockKey(dimId, x, y, z);
     }
 }
