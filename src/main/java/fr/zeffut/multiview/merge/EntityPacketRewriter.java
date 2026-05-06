@@ -236,12 +236,21 @@ public final class EntityPacketRewriter {
                 return rewriteSingleEntityId(sourceIdx, payload);
             }
         } catch (Exception e) {
-            // If rewriting fails (e.g. entity not yet registered), log and pass through
-            LOG.warn("EntityPacketRewriter: failed to rewrite packetId=" + pid
-                    + " from source=" + sourceIdx + ": " + e.getMessage());
+            // If rewriting fails (e.g. entity not yet registered), pass through. The same
+            // packet/source pair frequently fails repeatedly (every tick); rate-limit the
+            // warning to avoid swamping latest.log with tens of thousands of identical lines.
+            long key = (((long) pid) << 32) | (sourceIdx & 0xFFFFFFFFL);
+            int n = rewriteFailureCounts.merge(key, 1, Integer::sum);
+            if (n == 1 || n == 100 || n == 10_000) {
+                LOG.warn("EntityPacketRewriter: failed to rewrite packetId={} from source={} (#{}): {}",
+                        pid, sourceIdx, n, e.getMessage());
+            }
             return payload;
         }
     }
+
+    /** Per-(pid, sourceIdx) failure counter — used to rate-limit the rewrite WARN. */
+    private final java.util.Map<Long, Integer> rewriteFailureCounts = new java.util.HashMap<>();
 
     /**
      * Processes a MoveEntities action payload to update SourcePovTracker for the local player.

@@ -36,10 +36,15 @@ import org.slf4j.LoggerFactory;
  * </ul>
  *
  * <h2>Dimension handling</h2>
- * Phase 4.E limitation: dimension is hardcoded to {@code "minecraft:overworld"} for all sources.
- * Dimension tracking (per-source, updated on Login/Respawn) is deferred to Phase 5+.
- * This is acceptable because the test corpus primarily records overworld gameplay, and
- * cross-dimension block conflicts are rare in practice.
+ * Each source declares a dimension key (its initial world from {@code metadata.world_name}),
+ * passed via {@link #setSourceDimension(int, String)}. Block updates are scoped to that key
+ * in {@link WorldStateMerger} so blocks at the same {@code (x, y, z)} in different worlds do
+ * not collide in cross-source LWW arbitration.
+ *
+ * <p>Limitation: a source that crosses dimensions mid-recording (Nether portal, multi-world
+ * teleport) keeps its initial key for the whole stream. Tracking dim changes per-tick via
+ * RESPAWN parsing is deferred. In practice, replays that span multiple dims and need accurate
+ * cross-source LWW are rare; one initial dim per source is a sound approximation.
  *
  * <h2>Fallback mode</h2>
  * If MC PlayStateFactories or codecs are unavailable at construction time (e.g. no Bootstrap
@@ -52,8 +57,8 @@ public final class WorldPacketRewriter {
 
     private static final Logger LOG = LoggerFactory.getLogger(WorldPacketRewriter.class);
 
-    /** Hardcoded dimension for Phase 4.E — see class-level Javadoc for the rationale. */
-    private static final String DIMENSION_OVERWORLD = "minecraft:overworld";
+    /** Default dimension key when a source has no recorded {@code world_name}. */
+    private static final String DIMENSION_DEFAULT = "minecraft:overworld";
 
     /**
      * If true, codec access failed at construction time.
@@ -63,9 +68,27 @@ public final class WorldPacketRewriter {
 
     private final WorldStateMerger worldMerger;
 
+    /** Dimension key per source — populated via {@link #setSourceDimension}. */
+    private final java.util.Map<Integer, String> sourceDimensions = new java.util.HashMap<>();
+
     /** Numeric protocol IDs for WORLD packet types we handle, resolved at construction. */
     private int idBlockUpdate;
     private int idSectionBlocksUpdate;
+
+    /**
+     * Set the dimension key for a source — usually the source's
+     * {@code metadata.world_name}. Block updates from this source will key on the value
+     * supplied here in {@link WorldStateMerger}, so blocks at the same coords in
+     * different worlds do not LWW against each other.
+     */
+    public void setSourceDimension(int sourceIdx, String dimensionKey) {
+        if (dimensionKey == null || dimensionKey.isBlank()) return;
+        sourceDimensions.put(sourceIdx, dimensionKey);
+    }
+
+    private String dimensionFor(int sourceIdx) {
+        return sourceDimensions.getOrDefault(sourceIdx, DIMENSION_DEFAULT);
+    }
 
     public WorldPacketRewriter(WorldStateMerger worldMerger) {
         this.worldMerger = worldMerger;
@@ -146,7 +169,7 @@ public final class WorldPacketRewriter {
         int blockStateId = Block.getRawIdFromState(state);
 
         boolean accepted = worldMerger.acceptBlockUpdate(
-                DIMENSION_OVERWORLD,
+                dimensionFor(sourceIdx),
                 pos.getX(), pos.getY(), pos.getZ(),
                 tickAbs, blockStateId, sourceIdx);
 
@@ -198,7 +221,7 @@ public final class WorldPacketRewriter {
         pkt.visitUpdates((blockPos, blockState) -> {
             int bsId = Block.getRawIdFromState(blockState);
             boolean accepted = worldMerger.acceptBlockUpdate(
-                    DIMENSION_OVERWORLD,
+                    dimensionFor(sourceIdx),
                     blockPos.getX(), blockPos.getY(), blockPos.getZ(),
                     tickAbs, bsId, sourceIdx);
             if (accepted) {

@@ -206,6 +206,12 @@ public final class MergeOrchestrator {
                     entityMerger, idRemapper, povTracker, replays.size());
             WorldStateMerger worldMerger = new WorldStateMerger();
             WorldPacketRewriter worldRewriter = new WorldPacketRewriter(worldMerger);
+            // Multi-world support: scope each source's block updates by its initial world
+            // name so blocks at the same (x, y, z) in different multi-world plugins or
+            // dimensions do not LWW-collide cross-source.
+            for (int i = 0; i < replays.size(); i++) {
+                worldRewriter.setSourceDimension(i, replays.get(i).metadata().worldName());
+            }
             GlobalDeduper globalDeduper = new GlobalDeduper();
             PacketClassifier classifier = new PacketClassifier(
                     GamePacketDispatch.buildOrFallback(report));
@@ -579,11 +585,27 @@ public final class MergeOrchestrator {
         int idForgetLevelChunk = -1;
         int idRemoveEntities = -1;
         int idLevelChunkWithLight = -1;
+        int idPlayerInfoUpdate = -1;
+        int idPlayerInfoRemove = -1;
+        int idMoveEntityPos = -1;
+        int idMoveEntityRot = -1;
+        int idMoveEntityPosRot = -1;
+        int idTeleportEntity = -1;
+        int idEntityPositionSync = -1;
+        int idRotateHead = -1;
         try {
             idPlayerPosition = GamePacketDispatch.findId(PlayPackets.PLAYER_POSITION);
             idForgetLevelChunk = GamePacketDispatch.findId(PlayPackets.FORGET_LEVEL_CHUNK);
             idRemoveEntities = GamePacketDispatch.findId(PlayPackets.REMOVE_ENTITIES);
             idLevelChunkWithLight = GamePacketDispatch.findId(PlayPackets.LEVEL_CHUNK_WITH_LIGHT);
+            idPlayerInfoUpdate = GamePacketDispatch.findId(PlayPackets.PLAYER_INFO_UPDATE);
+            idPlayerInfoRemove = GamePacketDispatch.findId(PlayPackets.PLAYER_INFO_REMOVE);
+            idMoveEntityPos = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_POS);
+            idMoveEntityRot = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_ROT);
+            idMoveEntityPosRot = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_POS_ROT);
+            idTeleportEntity = GamePacketDispatch.findId(PlayPackets.TELEPORT_ENTITY);
+            idEntityPositionSync = GamePacketDispatch.findId(PlayPackets.ENTITY_POSITION_SYNC);
+            idRotateHead = GamePacketDispatch.findId(PlayPackets.ROTATE_HEAD);
         } catch (Throwable t) {
             LOG.warn("MergeOrchestrator: could not resolve special packet ids: "
                     + t.getClass().getSimpleName());
@@ -591,6 +613,11 @@ public final class MergeOrchestrator {
         // Track which chunks have already been emitted, keyed by content hash.
         // Prevents multiple POVs from overwriting the same chunk state on playback.
         java.util.Set<Long> emittedChunkHashes = new java.util.HashSet<>();
+
+        // PLAYER_INFO_UPDATE / PLAYER_INFO_REMOVE dedup by UUID — eliminates the duplicate
+        // "joined the game" chat lines that the GlobalDeduper content-hash misses (ping byte
+        // differs across sources for the same join event).
+        PlayerInfoUpdateDeduper playerInfoDeduper = new PlayerInfoUpdateDeduper();
 
         // 2. One cursor per source, priority-queue ordered by (tickAbs, sourceIdx)
         record SourceCursor(int sourceIdx, Iterator<PacketEntry> it, PacketEntry head) {}
@@ -853,7 +880,27 @@ public final class MergeOrchestrator {
                             } else {
                                 byte[] rewritten = entityRewriter.rewrite(
                                         cur.sourceIdx(), tickAbs, gp.bytes());
-                                if (gamePacketOrdinal >= 0) {
+                                // Cross-source dedup of *movement* packets: after entity-ID
+                                // remap, multiple sources observing the same entity move at
+                                // the same tick produce byte-identical payloads. The server
+                                // emits one tick-bound packet to all clients; each source
+                                // records it. Dropping duplicates here is the main lever to
+                                // smooth out the freeze bursts identified by MergeInspector.
+                                // Only the move/rotation/teleport packets are eligible —
+                                // SET_ENTITY_DATA, ENTITY_EVENT, etc. are state updates and
+                                // are left alone (their semantics are not safe for content
+                                // hashing). Status: the safer subset is enabled below.
+                                boolean isMovementPacket =
+                                        (idMoveEntityPos >= 0 && pid == idMoveEntityPos)
+                                     || (idMoveEntityRot >= 0 && pid == idMoveEntityRot)
+                                     || (idMoveEntityPosRot >= 0 && pid == idMoveEntityPosRot)
+                                     || (idTeleportEntity >= 0 && pid == idTeleportEntity)
+                                     || (idEntityPositionSync >= 0 && pid == idEntityPositionSync)
+                                     || (idRotateHead >= 0 && pid == idRotateHead);
+                                if (isMovementPacket
+                                        && !globalDeduper.shouldEmit(pid, tickAbs, rewritten)) {
+                                    ctx.report.stats.globalPacketsDeduped++;
+                                } else if (gamePacketOrdinal >= 0) {
                                     currentWriter.writeLiveAction(gamePacketOrdinal, rewritten);
                                 }
                             }
@@ -900,7 +947,17 @@ public final class MergeOrchestrator {
                     case GLOBAL -> {
                         if (cur.head().action() instanceof Action.GamePacket gp) {
                             int pid = PacketClassifier.readPacketId(gp.bytes());
-                            if (globalDeduper.shouldEmit(pid, tickAbs, gp.bytes())) {
+                            // UUID-level dedup for player-list updates — GlobalDeduper's
+                            // content hash misses these because per-source latency differs.
+                            boolean playerInfoDrop = false;
+                            if (idPlayerInfoUpdate >= 0 && pid == idPlayerInfoUpdate) {
+                                playerInfoDrop = !playerInfoDeduper.shouldEmitInfoUpdate(gp.bytes());
+                            } else if (idPlayerInfoRemove >= 0 && pid == idPlayerInfoRemove) {
+                                playerInfoDeduper.shouldEmitInfoRemove(gp.bytes());
+                            }
+                            if (playerInfoDrop) {
+                                ctx.report.stats.globalPacketsDeduped++;
+                            } else if (globalDeduper.shouldEmit(pid, tickAbs, gp.bytes())) {
                                 if (gamePacketOrdinal >= 0) {
                                     currentWriter.writeLiveAction(gamePacketOrdinal, gp.bytes());
                                 }
