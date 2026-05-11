@@ -22,9 +22,9 @@
   },
   "depends": {
     "fabricloader": ">=0.15.0",
-    "fabric-api": ">=0.141.0",
-    "minecraft": ">=1.21.11 <1.22",
+    "fabric-api": "*",
+    "minecraft": "${mod_minecraft_dep}",
     "java": ">=21",
-    "flashback": ">=0.39.0 <0.40"
+    "flashback": "${mod_flashback_dep}"
   }
 }

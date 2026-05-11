@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 
 import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.playback.ReplayServer;
+import com.moulberry.flashback.configuration.FlashbackConfigV1;
 
 import fr.zeffut.multiview.merge.MergeOptions;
 import fr.zeffut.multiview.merge.MergeOrchestrator;
@@ -16,6 +17,9 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.screen.TitleScreen;
+import net.minecraft.client.gui.screen.world.CreateWorldScreen;
 import net.minecraft.text.Text;
 
 import org.slf4j.Logger;
@@ -76,8 +80,18 @@ public final class TestHarness implements ClientModInitializer {
     private static final String CONFIG_FILE = ".multiview-test.json";
     private static final String RESULT_FILE = ".multiview-test-result.json";
 
-    private enum Phase { IDLE, MERGE, OPEN, PLAY, DONE }
+    private enum Phase {
+        IDLE,
+        MERGE, OPEN, PLAY,
+        REC_WAIT_TITLE, REC_WAIT_CREATE_SCREEN, REC_WAIT_INGAME, REC_RECORDING, REC_WAIT_FINISH,
+        DONE
+    }
     private volatile Phase phase = Phase.IDLE;
+    private boolean recordMode;
+    private long recordCheckpointMs;
+    private long recordingStartMs;
+    private int recordWaitTicks;
+    private Path recordedReplayPath;
 
     private Config config;
     private Path replayFolder;
@@ -129,15 +143,30 @@ public final class TestHarness implements ClientModInitializer {
             try (Reader r = Files.newBufferedReader(cfg)) {
                 config = new Gson().fromJson(r, Config.class);
             }
-            if (config == null || config.sources == null || config.sources.size() < 2) {
-                LOG.warn("[TestHarness] config malformed (need ≥2 sources). Aborting.");
+            if (config == null) {
+                LOG.warn("[TestHarness] config malformed. Aborting.");
                 return;
             }
             startTimeMs = System.currentTimeMillis();
+            recordMode = config.mode != null && config.mode.equalsIgnoreCase("record");
+            LOG.info("[TestHarness] activated. mode={} config={}", recordMode ? "record" : "merge", config);
+            // Disable focus-pause globally so the harness keeps ticking when the window loses focus.
+            try {
+                java.lang.reflect.Field f = mc.options.getClass().getField("pauseOnLostFocus");
+                f.setBoolean(mc.options, false);
+            } catch (Throwable ignore) {}
+            if (recordMode) {
+                recordCheckpointMs = System.currentTimeMillis();
+                phaseLog.add(timestamp() + " RECORD mode — waiting for title screen");
+                phase = Phase.REC_WAIT_TITLE;
+                return;
+            }
+            if (config.sources == null || config.sources.size() < 2) {
+                LOG.warn("[TestHarness] merge mode needs ≥2 sources. Aborting.");
+                return;
+            }
             phaseLog.add(timestamp() + " STARTED with " + config.sources.size() + " sources");
-            LOG.info("[TestHarness] activated. config={}", config);
             phase = Phase.MERGE;
-            // Run the merge on a background thread so we don't block the client thread.
             mergeExecutor.submit(this::runMerge);
         } catch (Throwable t) {
             LOG.error("[TestHarness] init failed", t);
@@ -190,6 +219,11 @@ public final class TestHarness implements ClientModInitializer {
                 finalizeAndQuit(mc);
                 return;
             }
+        }
+
+        if (recordMode) {
+            handleRecordTick(mc);
+            return;
         }
 
         if (phase == Phase.MERGE && mergeFinished.get()) {
@@ -297,6 +331,248 @@ public final class TestHarness implements ClientModInitializer {
         }
     }
 
+    private void handleRecordTick(MinecraftClient mc) {
+        switch (phase) {
+            case REC_WAIT_TITLE -> {
+                if (mc.currentScreen instanceof TitleScreen) {
+                    phaseLog.add(timestamp() + " title screen — invoking CreateWorldScreen.showTestWorld");
+                    try {
+                        CreateWorldScreen.showTestWorld(mc, () -> {});
+                        phase = Phase.REC_WAIT_CREATE_SCREEN;
+                        recordWaitTicks = 0;
+                    } catch (Throwable t) {
+                        errorMessages.add("showTestWorld: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+                        LOG.error("[TestHarness] showTestWorld failed", t);
+                        phase = Phase.DONE; finalizeAndQuit(mc);
+                    }
+                }
+            }
+            case REC_WAIT_CREATE_SCREEN -> {
+                recordWaitTicks++;
+                if (mc.currentScreen instanceof CreateWorldScreen cws) {
+                    if (recordWaitTicks == 1) {
+                        phaseLog.add(timestamp() + " CreateWorldScreen visible — enumerating widgets");
+                        java.util.Set<Object> seen = new java.util.HashSet<>();
+                        List<String> labels = new ArrayList<>();
+                        collectWidgetLabels(cws, seen, 0, labels);
+                        phaseLog.add(timestamp() + " widget labels: " + labels);
+                    }
+                    if (clickWidgetMatching(cws, "create new world")) {
+                        phaseLog.add(timestamp() + " Create button onPress invoked");
+                        phase = Phase.REC_WAIT_INGAME;
+                        recordWaitTicks = 0;
+                    } else if (recordWaitTicks > 60) {
+                        errorMessages.add("Create button not found in CreateWorldScreen");
+                        phase = Phase.DONE; finalizeAndQuit(mc);
+                    }
+                } else if (recordWaitTicks > 1200) {
+                    errorMessages.add("CreateWorldScreen never appeared (60s wait)");
+                    phase = Phase.DONE; finalizeAndQuit(mc);
+                }
+            }
+            case REC_WAIT_INGAME -> {
+                recordWaitTicks++;
+                if (mc.world != null && mc.player != null && !mc.player.isRemoved()) {
+                    if (recordWaitTicks > 60) {
+                        phaseLog.add(timestamp() + " in-game (player loaded) — starting Flashback recording");
+                        try {
+                            FlashbackConfigV1 cfg = Flashback.getConfig();
+                            cfg.recordingControls.quicksave = true;
+                            cfg.recordingControls.automaticallyFinish = false;
+                            cfg.recordingControls.showRecordingToasts = false;
+                            Flashback.startRecordingReplay();
+                            recordingStartMs = System.currentTimeMillis();
+                            phase = Phase.REC_RECORDING;
+                            recordWaitTicks = 0;
+                        } catch (Throwable t) {
+                            errorMessages.add("startRecordingReplay: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+                            LOG.error("[TestHarness] startRecordingReplay failed", t);
+                            phase = Phase.DONE; finalizeAndQuit(mc);
+                        }
+                    }
+                } else if (recordWaitTicks > 2400) {
+                    errorMessages.add("never reached in-game (120s wait)");
+                    phase = Phase.DONE; finalizeAndQuit(mc);
+                }
+            }
+            case REC_RECORDING -> {
+                long playSec = config.playSeconds != null ? config.playSeconds : 30;
+                long elapsed = System.currentTimeMillis() - recordingStartMs;
+                if (elapsed % 5000L < 50L) {
+                    phaseLog.add(timestamp() + " recording… " + (elapsed / 1000L) + "s / " + playSec + "s");
+                }
+                if (elapsed > playSec * 1000L) {
+                    phaseLog.add(timestamp() + " stopping recording (quicksave=on)");
+                    try {
+                        Flashback.finishRecordingReplay();
+                    } catch (Throwable t) {
+                        errorMessages.add("finishRecordingReplay: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+                        phase = Phase.DONE; finalizeAndQuit(mc); return;
+                    }
+                    phase = Phase.REC_WAIT_FINISH;
+                    recordWaitTicks = 0;
+                }
+            }
+            case REC_WAIT_FINISH -> {
+                recordWaitTicks++;
+                boolean stillExporting;
+                try { stillExporting = Flashback.isExporting(); }
+                catch (Throwable t) { stillExporting = false; }
+                if (!stillExporting && Flashback.RECORDER == null) {
+                    Path produced = null;
+                    try (var s = Files.list(replayFolder)) {
+                        produced = s
+                                .filter(p -> p.toString().endsWith(".zip"))
+                                .filter(p -> {
+                                    try { return Files.getLastModifiedTime(p).toMillis() >= recordCheckpointMs; }
+                                    catch (IOException e) { return false; }
+                                })
+                                .max(java.util.Comparator.comparingLong(p -> {
+                                    try { return Files.getLastModifiedTime(p).toMillis(); }
+                                    catch (IOException e) { return 0L; }
+                                }))
+                                .orElse(null);
+                    } catch (IOException e) {
+                        errorMessages.add("replays scan failed: " + e.getMessage());
+                    }
+                    if (produced != null && Files.isRegularFile(produced)) {
+                        try {
+                            if (config.output != null && !config.output.isBlank()) {
+                                Path renamed = replayFolder.resolve(config.output + ".zip");
+                                Files.deleteIfExists(renamed);
+                                Files.move(produced, renamed);
+                                produced = renamed;
+                            }
+                            recordedReplayPath = produced;
+                            phaseLog.add(timestamp() + " export done: " + produced.getFileName() + " (" + Files.size(produced) + " bytes)");
+                        } catch (IOException e) {
+                            errorMessages.add("rename failed: " + e.getMessage());
+                            recordedReplayPath = produced;
+                        }
+                    } else {
+                        if (recordWaitTicks > 1200) {
+                            errorMessages.add("no recorded zip found in " + replayFolder + " after 60s wait");
+                            phase = Phase.DONE; finalizeAndQuit(mc); return;
+                        }
+                        return; // keep waiting
+                    }
+                    phase = Phase.DONE;
+                    finalizeAndQuit(mc);
+                } else if (recordWaitTicks > 6000) {
+                    errorMessages.add("export still in progress after 5min — aborting");
+                    phase = Phase.DONE; finalizeAndQuit(mc);
+                }
+            }
+            default -> {}
+        }
+    }
+
+    private boolean clickWidgetMatching(Screen screen, String labelLower) {
+        return clickWidgetRecursive(screen, labelLower, new java.util.HashSet<>(), 0);
+    }
+
+    private boolean clickWidgetRecursive(Object node, String labelLower, java.util.Set<Object> seen, int depth) {
+        if (node == null || depth > 12 || !seen.add(node)) return false;
+        String msg = getWidgetMessage(node);
+        if (msg != null && msg.toLowerCase().contains(labelLower)) {
+            phaseLog.add(timestamp() + " match: " + msg + " <" + node.getClass().getSimpleName() + ">");
+            if (invokeOnPress(node)) return true;
+        }
+        try {
+            java.lang.reflect.Method childrenM = node.getClass().getMethod("children");
+            Object children = childrenM.invoke(node);
+            if (children instanceof List<?> list) {
+                for (Object c : list) {
+                    if (clickWidgetRecursive(c, labelLower, seen, depth + 1)) return true;
+                }
+            }
+        } catch (Throwable ignore) {}
+        for (Object f : reflectFieldValues(node)) {
+            if (f instanceof List<?> list) {
+                for (Object c : list) if (clickWidgetRecursive(c, labelLower, seen, depth + 1)) return true;
+            } else if (f != null && !(f instanceof String) && !(f.getClass().isPrimitive())
+                    && !f.getClass().getName().startsWith("java.")
+                    && !f.getClass().getName().startsWith("com.mojang.")) {
+                if (clickWidgetRecursive(f, labelLower, seen, depth + 1)) return true;
+            }
+        }
+        return false;
+    }
+
+    private void collectWidgetLabels(Object node, java.util.Set<Object> seen, int depth, List<String> out) {
+        if (node == null || depth > 12 || !seen.add(node) || out.size() > 80) return;
+        String msg = getWidgetMessage(node);
+        if (msg != null && !msg.isBlank()) out.add(msg + " <" + node.getClass().getSimpleName() + ">");
+        try {
+            java.lang.reflect.Method childrenM = node.getClass().getMethod("children");
+            Object children = childrenM.invoke(node);
+            if (children instanceof List<?> list) {
+                for (Object c : list) collectWidgetLabels(c, seen, depth + 1, out);
+            }
+        } catch (Throwable ignore) {}
+        for (Object f : reflectFieldValues(node)) {
+            if (f instanceof List<?> list) {
+                for (Object c : list) collectWidgetLabels(c, seen, depth + 1, out);
+            } else if (f != null && !(f instanceof String) && !f.getClass().isPrimitive()
+                    && !f.getClass().getName().startsWith("java.")
+                    && !f.getClass().getName().startsWith("com.mojang.")) {
+                collectWidgetLabels(f, seen, depth + 1, out);
+            }
+        }
+    }
+
+    private List<Object> reflectFieldValues(Object obj) {
+        List<Object> out = new ArrayList<>();
+        Class<?> c = obj.getClass();
+        while (c != null && c != Object.class) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                try {
+                    f.setAccessible(true);
+                    out.add(f.get(obj));
+                } catch (Throwable ignore) {}
+            }
+            c = c.getSuperclass();
+        }
+        return out;
+    }
+
+    private String getWidgetMessage(Object widget) {
+        try {
+            java.lang.reflect.Method getMsg = widget.getClass().getMethod("getMessage");
+            Object msg = getMsg.invoke(widget);
+            if (msg == null) return null;
+            try {
+                java.lang.reflect.Method getString = msg.getClass().getMethod("getString");
+                Object s = getString.invoke(msg);
+                return s != null ? s.toString() : null;
+            } catch (Throwable ignore) {
+                return msg.toString();
+            }
+        } catch (Throwable ignore) { return null; }
+    }
+
+    private boolean invokeOnPress(Object widget) {
+        Class<?> c = widget.getClass();
+        while (c != null) {
+            for (java.lang.reflect.Method mm : c.getDeclaredMethods()) {
+                if (mm.getName().equals("onPress")) {
+                    try {
+                        mm.setAccessible(true);
+                        Object[] args = new Object[mm.getParameterCount()];
+                        mm.invoke(widget, args);
+                        phaseLog.add(timestamp() + " invoked " + mm + " on " + widget.getClass().getSimpleName());
+                        return true;
+                    } catch (Throwable t) {
+                        phaseLog.add(timestamp() + " onPress invoke failed on " + widget.getClass().getSimpleName() + ": " + t.getClass().getSimpleName() + ": " + t.getMessage());
+                    }
+                }
+            }
+            c = c.getSuperclass();
+        }
+        return false;
+    }
+
     private void onChat(Text message, boolean overlay) {
         if (overlay) return;
         if (phase == Phase.IDLE || phase == Phase.DONE) return;
@@ -389,6 +665,10 @@ public final class TestHarness implements ClientModInitializer {
             if (mergedZipPath != null) {
                 root.addProperty("mergedZip", mergedZipPath.toString());
             }
+            if (recordedReplayPath != null) {
+                root.addProperty("recordedReplay", recordedReplayPath.toString());
+            }
+            root.addProperty("mode", recordMode ? "record" : "merge");
 
             // Chat join counts — flag SUSPICIOUS duplicates only. A player can legitimately
             // join multiple times in the original session (leave-rejoin cycles). Only count
@@ -463,9 +743,8 @@ public final class TestHarness implements ClientModInitializer {
             // counts even when the merged file contains exactly one chat per event.
             // File-level chat dedup is tracked via the merge report's globalPacketsDeduped
             // stat — the harness logs it for visibility but doesn't fail on it.
-            boolean pass = mergeError == null
-                    && errorMessages.isEmpty()
-                    && crashReports.isEmpty();
+            boolean pass = errorMessages.isEmpty() && crashReports.isEmpty()
+                    && (recordMode ? recordedReplayPath != null : mergeError == null);
             root.addProperty("verdict", pass ? "PASS" : "FAIL");
 
             Gson gson = new GsonBuilder().setPrettyPrinting().create();
@@ -486,18 +765,18 @@ public final class TestHarness implements ClientModInitializer {
 
     /** JSON shape of {@code .multiview-test.json}. */
     private static final class Config {
+        String mode;             // "merge" (default) or "record"
         List<String> sources;
         String output;
-        Integer playTicks;       // legacy, ignored — replaced by playSeconds
-        Integer playSeconds;     // wall-clock playback duration, default 60s
-        Integer playTimeoutSeconds; // hard cap, default 600
-        Integer maxRunMinutes;   // global watchdog, default 20
+        Integer playTicks;
+        Integer playSeconds;
+        Integer playTimeoutSeconds;
+        Integer maxRunMinutes;
 
         @Override
         public String toString() {
-            return "Config{sources=" + sources + ", output=" + output
-                    + ", playTicks=" + playTicks + ", playTimeoutSeconds=" + playTimeoutSeconds
-                    + ", maxRunMinutes=" + maxRunMinutes + "}";
+            return "Config{mode=" + mode + ", sources=" + sources + ", output=" + output
+                    + ", playSeconds=" + playSeconds + ", maxRunMinutes=" + maxRunMinutes + "}";
         }
     }
 }

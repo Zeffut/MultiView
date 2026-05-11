@@ -38,9 +38,17 @@ dependencies {
 }
 
 processResources {
+    def modMcDep = project.findProperty("mod_minecraft_dep") ?: ">=${project.minecraft_version}"
+    def modFbDep = project.findProperty("mod_flashback_dep") ?: ">=${project.flashback_version}"
     inputs.property "version", project.version
+    inputs.property "mod_minecraft_dep", modMcDep
+    inputs.property "mod_flashback_dep", modFbDep
     filesMatching("fabric.mod.json") {
-        expand "version": inputs.properties.version
+        expand(
+            "version": project.version,
+            "mod_minecraft_dep": modMcDep,
+            "mod_flashback_dep": modFbDep
+        )
     }
 }
 
