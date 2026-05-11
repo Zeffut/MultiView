@@ -1,0 +1,24 @@
+# MultiView build config — Minecraft 26.1 / 26.1.1 / 26.1.2
+# STATUS: PENDING — Yarn mappings not yet published for 26.x.
+#
+# To enable: rename to "26.1.properties" once Yarn for 26.1.x lands.
+# Track at https://github.com/FabricMC/yarn/releases
+#
+# Alternatively, the project can be migrated to Mojang official mappings
+# (which Flashback 0.40.0 already uses). That requires updating build.gradle
+# to use `loom.officialMojangMappings()` instead of `yarn` and rewriting
+# imports for MC types whose Mojang names differ from Yarn.
+
+minecraft_version=26.1.2
+yarn_mappings=PENDING_YARN_26.1.2+build.1
+loader_version=0.19.2
+fabric_version=0.148.2+26.1.2
+loom_version=1.16.1
+
+flashback_version=0.40.0
+flashback_modrinth_id=2sJTwAvJ
+
+mod_minecraft_dep=>=26.1 <26.2
+mod_flashback_dep=>=0.40.0 <0.41
+
+modrinth_game_versions=26.1,26.1.1,26.1.2
