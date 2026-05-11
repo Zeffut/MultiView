@@ -43,6 +43,26 @@ public final class IdRemapper {
         return mapping.containsKey(key(sourceIdx, localId));
     }
 
+    /**
+     * Removes a (sourceIdx, localId) mapping. Called by {@link EntityMerger#purge} to free
+     * memory on long replays — without this, the mapping grows unboundedly for transient
+     * entities (mobs spawned and destroyed during a multi-hour session).
+     */
+    public void remove(int sourceIdx, int localId) {
+        mapping.remove(key(sourceIdx, localId));
+    }
+
+    /**
+     * Removes every mapping whose globalId is in the provided set. Used by
+     * {@link EntityMerger#purge} when a globalId is reclaimed.
+     */
+    public void removeByGlobalId(java.util.Set<Integer> globalIds) {
+        if (globalIds == null || globalIds.isEmpty()) return;
+        mapping.values().removeIf(globalIds::contains);
+    }
+
+    public int size() { return mapping.size(); }
+
     private static long key(int sourceIdx, int localId) {
         return ((long) sourceIdx << 32) | (localId & 0xFFFFFFFFL);
     }

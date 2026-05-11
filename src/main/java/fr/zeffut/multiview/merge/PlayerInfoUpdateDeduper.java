@@ -106,10 +106,6 @@ public final class PlayerInfoUpdateDeduper {
                 }
 
                 codecDecodedCount++;
-                if (codecDecodedCount <= 3) {
-                    LOG.warn("[PIU-DIAG] codec decoded ok #{}: actions={} entries={} allKnown={}",
-                            codecDecodedCount, pkt.getActions(), pkt.getEntries().size(), allKnown);
-                }
 
                 if (allKnown) {
                     duplicateAddDropped++;
@@ -119,10 +115,6 @@ public final class PlayerInfoUpdateDeduper {
                 return true;
             } catch (Throwable t) {
                 codecFailureCount++;
-                if (codecFailureCount <= 3) {
-                    LOG.warn("[PIU-DIAG] codec decode failed #{}: {} {}",
-                            codecFailureCount, t.getClass().getSimpleName(), t.getMessage());
-                }
                 // fall through to heuristic
             }
         }

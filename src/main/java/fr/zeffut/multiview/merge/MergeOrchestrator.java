@@ -1075,7 +1075,7 @@ public final class MergeOrchestrator {
                                         if (chatText != null && chatText.contains("joined the game")
                                                 && chatJoinedSamplesLogged < 12) {
                                             chatJoinedSamplesLogged++;
-                                            LOG.warn("[CHAT-DIAG] emit tick={} text='{}'",
+                                            LOG.debug("[chat] emit tick={} text='{}'",
                                                     tickAbs, chatText);
                                         }
                                     }

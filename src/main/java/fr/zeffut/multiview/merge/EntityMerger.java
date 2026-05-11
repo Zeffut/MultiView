@@ -116,9 +116,29 @@ public final class EntityMerger {
         return chosen.globalId;
     }
 
-    /** Purge les entités dont lastSeenTick < currentTick - PURGE_AGE. À appeler toutes les 100 ticks. */
+    /**
+     * Purge les entités dont lastSeenTick &lt; currentTick - PURGE_AGE. À appeler toutes
+     * les 100 ticks. Purge en cascade : states, uuidIndex (déjà fait depuis 0.2.x), ET
+     * idRemapper.mapping (ajouté en 0.3) pour éviter la croissance unbounded sur replays
+     * longs (le mapping de IdRemapper n'avait aucune purge avant — fuite mémoire O(total
+     * entities ever seen) sur sessions multi-heures).
+     */
     public void purge(int currentTick) {
-        states.values().removeIf(e -> e.lastSeenTick < currentTick - PURGE_AGE);
+        int threshold = currentTick - PURGE_AGE;
+        java.util.Set<Integer> purgedGlobalIds = new java.util.HashSet<>();
+        java.util.UUID purgedUuid = null;
+        for (java.util.Iterator<Map.Entry<Integer, EntityState>> it =
+                     states.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<Integer, EntityState> e = it.next();
+            if (e.getValue().lastSeenTick < threshold) {
+                purgedGlobalIds.add(e.getKey());
+                it.remove();
+            }
+        }
+        if (!purgedGlobalIds.isEmpty()) {
+            uuidIndex.values().removeIf(purgedGlobalIds::contains);
+            idRemapper.removeByGlobalId(purgedGlobalIds);
+        }
     }
 
     public int uuidMergedCount() { return uuidMerged; }

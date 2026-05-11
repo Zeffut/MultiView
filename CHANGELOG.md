@@ -2,6 +2,46 @@
 
 Toutes les modifications notables apparaissent ici. Format basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.3.0] — 2026-05-11
+
+Dedup massif des packets cross-source. Outil de test autonome.
+
+### Dedup au niveau fichier
+
+- **PlayerInfoUpdate** (PIU) : dedup UUID-level via `PlayerListS2CPacket.CODEC.decode()`. Drop tout PIU dont chaque entrée UUID est déjà annoncée. Pre-scan de la snapshot du primary pour pré-enregistrer les UUIDs. Fallback heuristique si Bootstrap MC indisponible (unit tests).
+- **SystemChat** : drop secondary unconditionally (clock skew cross-source défait le strict `(pid, tickAbs, content)` dedup de GlobalDeduper). Dedup primary par **string content** extrait via `GameMessageS2CPacket.CODEC.decode().getString()` (catches le "même chat logique, bytes différents" causé par hover/signature timestamps).
+- **MoveEntity / TeleportEntity / RotateHead** : dedup cross-source via content-hash après remap entité. Réduit les bursts d'activité physique de 90%+.
+- **cN snapshots** : `copyPrimarySnapshotForTick` filtre les PIU(ADD_PLAYER) — MC tab list persiste à travers les segment boundaries, le re-emit créerait un re-fire chat à chaque boundary.
+
+### Multi-world
+
+- `WorldPacketRewriter` accepte une dimension key par source (initialisée depuis `metadata.world_name`). Plus de collisions cross-world dans LWW. Limitation : dim-tracking mid-recording (RESPAWN parsing) toujours non implémenté.
+
+### Outils
+
+- **`TestHarness`** : entrypoint client Fabric, déclenché par `.multiview-test.json` dans gameDir. Auto-merge → auto-open replay → unpause + tickRate 200/s (10× speedup) → capture chat events → écrit `.multiview-test-result.json` (verdict + stats) → quit MC. Permet d'itérer sans intervention utilisateur. Watchdog 20min safety. Voir `src/main/java/fr/zeffut/multiview/test/TestHarness.java`.
+- **`MergeInspector --deep`** : breakdown par packetId sur les bursts, top 5 packetIds par segment, busy ticks > 500 actions.
+
+### Fuites mémoire corrigées
+
+- `IdRemapper` : ajout de `removeByGlobalId(Set)` appelé en cascade depuis `EntityMerger.purge`. Le mapping ne croît plus sans bornes sur replays multi-heures.
+- `EntityMerger.purge` purge en cascade `states` + `uuidIndex` + `idRemapper.mapping` (depuis 0.2.5 + 0.3).
+
+### Limitations connues
+
+- **Doublons "X joined the game" affichés dans le chat MC** : causés par **Flashback's playback** (broadcast à chaque viewer/fake-player). Le fichier mergé est propre (1 chat par event), c'est l'affichage qui double. Hors scope MultiView.
+- **Bursts résiduels** sur événements physiques massifs (combat, explosions) malgré le dedup MoveEntity — non-MoveEntity packets (SET_ENTITY_DATA, ENTITY_EVENT) restent en passthrough.
+- **Multi-dimension mid-recording** : tracking par RESPAWN packet non implémenté (limitation à l'initial world).
+- **MergeOrchestrator** : 1300+ lignes (refactor architectural reporté).
+
+### Stats (validation harness autonome, 90s de lecture sur 4 POV)
+
+- 312k packets dédupés
+- 18k entités fusionnées par UUID
+- 0 crash, 0 erreur
+
+[0.3.0]: https://github.com/Zeffut/MultiView/releases/tag/v0.3.0
+
 ## [0.2.5] — 2026-05-06
 
 Audit de qualité — durcissement de la sécurité, fiabilité du rollback, instrumentation. Aucun changement du pipeline merge lui-même : la logique de dedup d'entités v0.2.0 est conservée (testée fonctionnelle en runtime). Les issues entity-dedup multi-POV restent comme limitations connues.

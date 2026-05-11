@@ -2,7 +2,7 @@
 
 Addon Fabric pour [Flashback](https://modrinth.com/mod/flashback) qui fusionne plusieurs replays `.flashback` enregistrés par différents joueurs d'une même session Minecraft en **un seul replay unifié** — "observateur omniscient" qui contient l'union des chunks, entités et événements observés par au moins un des POV.
 
-Version **0.2.5** — durcissement audit (sécurité zip-slip / zip-bomb, rollback atomique, observabilité SLF4J, validations format) sans modifier le pipeline merge — voir `CHANGELOG.md`.
+Version **0.3.0** — dedup massif cross-source (PlayerInfoUpdate, SystemChat par contenu, MoveEntity), multi-world dim per source, outil de test autonome `TestHarness`. Voir `CHANGELOG.md`.
 
 ## Public cible
 
