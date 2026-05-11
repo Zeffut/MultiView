@@ -255,14 +255,14 @@ public final class TestHarness implements ClientModInitializer {
                 if (rs.replayPaused) {
                     rs.replayPaused = false;
                 }
-                // Flashback splits the tick rate into "auto" (desiredTickRate) and "manual"
-                // (desiredTickRateManual). The UI's speed slider writes the manual field,
-                // so we mirror that: manual=true.
-                rs.setDesiredTickRate(200f, true);
-                // Also raise the underlying MC server's tick rate — /tick rate 200 — so the
-                // server's processing loop doesn't cap us at vanilla 20 Hz.
+                // Play at vanilla MC tick rate (20/s). An earlier experiment with 200/s
+                // (10× speedup) reliably triggered a Flashback-side NPE in
+                // ChunkLevelManager.handleChunkLeave because chunk-tracking sets weren't
+                // initialised yet when the next ADD/REMOVE arrived. Normal speed avoids
+                // the race and finishes 90s of playback in 90s.
+                rs.setDesiredTickRate(20f, true);
                 try {
-                    rs.getTickManager().setTickRate(200f);
+                    rs.getTickManager().setTickRate(20f);
                 } catch (Throwable ignore) {}
                 int replayTick = rs.getReplayTick();
                 if (replayTick != lastReplayTickSeen) {
