@@ -511,6 +511,25 @@ public final class MergeOrchestrator {
     private static final int SEGMENT_TICKS = 6000;
 
     /**
+     * Decodes a SYSTEM_CHAT payload via the MC codec and returns the visible Text content
+     * as a flat string (or {@code null} on decode failure). Used to dedup logically-identical
+     * "X joined the game" broadcasts whose raw bytes differ.
+     */
+    private static String decodeSystemChatText(byte[] payload) {
+        try {
+            io.netty.buffer.ByteBuf raw = io.netty.buffer.Unpooled.wrappedBuffer(payload);
+            VarInts.readVarInt(raw); // skip packetId
+            net.minecraft.network.RegistryByteBuf rbuf = new net.minecraft.network.RegistryByteBuf(
+                    raw, net.minecraft.registry.DynamicRegistryManager.EMPTY);
+            net.minecraft.network.packet.s2c.play.GameMessageS2CPacket pkt =
+                    net.minecraft.network.packet.s2c.play.GameMessageS2CPacket.CODEC.decode(rbuf);
+            return pkt.content().getString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
      * Window (in ticks) for SystemChat content-hash dedup. Identical SystemChat text within
      * this window is considered a re-broadcast and dropped. 200 ticks = 10s, wide enough to
      * absorb cross-source clock skew but small enough to allow legitimate repeat chats
@@ -702,9 +721,12 @@ public final class MergeOrchestrator {
             int chatDroppedSecondary = 0;
             int chatEmittedPrimary = 0;
             int chatDroppedPrimaryDup = 0;
-            // Content-hash → tickAbs of last emission; lets us dedup SystemChat broadcasts
-            // whose bytes are identical but land at different ticks across reconstruction.
-            java.util.HashMap<Long, Integer> chatRecentContent = new java.util.HashMap<>();
+            int chatNullTextCount = 0;
+            int chatJoinedSamplesLogged = 0;
+            // Visible-text dedup: each unique chat string emitted at most once. Catches the
+            // "same chat, different bytes" pattern (Text components with dynamic fields like
+            // signatures / timestamps that defeat byte-level dedup).
+            java.util.HashSet<String> chatRecentChatText = new java.util.HashSet<>();
             int lastPurge = 0;
             boolean warnedOutOfOrder = false;
 
@@ -767,7 +789,8 @@ public final class MergeOrchestrator {
                     String nextSegName = "c" + currentSegmentIdx + ".flashback";
                     currentWriter = new SegmentWriter(nextSegName, mainRegistry);
                     copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
-                            currentWriter, currentSegmentStart, mainRegistry, ctx.report);
+                            currentWriter, currentSegmentStart, mainRegistry, ctx.report,
+                            snapshotPiuId);
                     currentWriter.endSnapshot();
                     currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
                 }
@@ -1041,14 +1064,20 @@ public final class MergeOrchestrator {
                                     playerInfoDrop = true;
                                     chatDroppedSecondary++;
                                 } else {
-                                    long contentHash = contentHash(gp.bytes());
-                                    Integer lastSeen = chatRecentContent.get(contentHash);
-                                    if (lastSeen != null && tickAbs - lastSeen < CHAT_DEDUP_WINDOW) {
+                                    String chatText = decodeSystemChatText(gp.bytes());
+                                    if (chatText != null && chatRecentChatText.contains(chatText)) {
                                         playerInfoDrop = true;
                                         chatDroppedPrimaryDup++;
                                     } else {
-                                        chatRecentContent.put(contentHash, tickAbs);
+                                        if (chatText != null) chatRecentChatText.add(chatText);
+                                        else chatNullTextCount++;
                                         chatEmittedPrimary++;
+                                        if (chatText != null && chatText.contains("joined the game")
+                                                && chatJoinedSamplesLogged < 12) {
+                                            chatJoinedSamplesLogged++;
+                                            LOG.warn("[CHAT-DIAG] emit tick={} text='{}'",
+                                                    tickAbs, chatText);
+                                        }
                                     }
                                 }
                             } else if (cur.sourceIdx() != ctx.primarySourceIdx
@@ -1170,6 +1199,16 @@ public final class MergeOrchestrator {
             int absTick,
             List<String> destRegistry,
             MergeReport report) {
+        copyPrimarySnapshotForTick(primary, dest, absTick, destRegistry, report, -1);
+    }
+
+    private static void copyPrimarySnapshotForTick(
+            FlashbackReplay primary,
+            SegmentWriter dest,
+            int absTick,
+            List<String> destRegistry,
+            MergeReport report,
+            int skipPidPlayerInfoUpdate) {
 
         List<Path> segments = primary.segmentPaths();
         if (segments.isEmpty()) return;
@@ -1221,6 +1260,21 @@ public final class MergeOrchestrator {
                     // Type not present in merged registry — drop silently
                     droppedCount++;
                     continue;
+                }
+                // Skip PIU(ADD_PLAYER) in mid-segment snapshots — Flashback embeds the
+                // current player list in each cN snapshot so seek lands on a fully
+                // populated tab list. But during continuous playback, MC's tab list is
+                // already populated from c0 and persists across segment boundaries;
+                // re-emitting the bulk PIU here makes MC re-fire "joined the game" chat
+                // lines for every player at every segment boundary.
+                if (skipPidPlayerInfoUpdate >= 0
+                        && ActionType.GAME_PACKET.equals(typeId)
+                        && raw.payload().length > 0) {
+                    int pidIn = PacketClassifier.readPacketId(raw.payload());
+                    if (pidIn == skipPidPlayerInfoUpdate && hasAddPlayerBit(raw.payload())) {
+                        droppedCount++;
+                        continue;
+                    }
                 }
                 dest.writeSnapshotAction(destOrdinal, raw.payload());
                 copiedCount++;
