@@ -486,8 +486,37 @@ public final class MergeOrchestrator {
         return FlashbackMetadata.fromJson(new StringReader(json));
     }
 
+    /**
+     * Reads the PLAYER_INFO_UPDATE actions bitmask byte (just after the VarInt packetId)
+     * and tests bit 0 — ADD_PLAYER. Returns false on any decode error so the caller emits
+     * the packet rather than dropping by mistake.
+     */
+    private static boolean hasAddPlayerBit(byte[] payload) {
+        if (payload == null || payload.length < 2) return false;
+        try {
+            // Skip the leading VarInt packetId (1–5 bytes)
+            int idx = 0;
+            for (int i = 0; i < 5 && idx < payload.length; i++) {
+                if ((payload[idx++] & 0x80) == 0) break;
+            }
+            if (idx >= payload.length) return false;
+            int actionsBitmask = payload[idx] & 0xFF;
+            return (actionsBitmask & 0x01) != 0;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     /** Number of ticks per output segment (~5 min of gameplay at 20 ticks/s). */
     private static final int SEGMENT_TICKS = 6000;
+
+    /**
+     * Window (in ticks) for SystemChat content-hash dedup. Identical SystemChat text within
+     * this window is considered a re-broadcast and dropped. 200 ticks = 10s, wide enough to
+     * absorb cross-source clock skew but small enough to allow legitimate repeat chats
+     * (a player typing the same word twice will be 10s+ apart).
+     */
+    private static final int CHAT_DEDUP_WINDOW = 200;
 
     /** CRC32C content hash for dedup comparisons. */
     private static long contentHash(byte[] payload) {
@@ -519,6 +548,18 @@ public final class MergeOrchestrator {
         List<String> mainRegistry = extractRegistryFromFirstSegment(
                 ctx.sources.get(ctx.primarySourceIdx));
 
+        // PLAYER_INFO_UPDATE deduper — created early so the snapshot copy below can
+        // pre-register UUIDs seen in primary's snapshot section (otherwise primary's
+        // live PIU(ADD_PLAYER) for the same player produces a second "joined" line).
+        PlayerInfoUpdateDeduper playerInfoDeduper = new PlayerInfoUpdateDeduper();
+        int idPlayerInfoUpdate;
+        try {
+            idPlayerInfoUpdate = GamePacketDispatch.findId(PlayPackets.PLAYER_INFO_UPDATE);
+        } catch (Throwable t) {
+            idPlayerInfoUpdate = -1;
+        }
+        final int snapshotPiuId = idPlayerInfoUpdate;
+
         // Helper to open a new segment writer with the proper snapshot content.
         // c0 gets the full primary snapshot; subsequent segments get an empty snapshot
         // (sequential playback from c0 snapshot is sufficient; random-seek to mid-segment
@@ -530,6 +571,7 @@ public final class MergeOrchestrator {
         // initial chunks, etc.) to be present in the snapshot; without them the world
         // opens empty.
         int snapshotActionsCopied = 0;
+        int snapshotPiuSeenCount = 0;
         List<Path> primarySegments = ctx.sources.get(ctx.primarySourceIdx).segmentPaths();
         if (!primarySegments.isEmpty()) {
             Path firstSeg = primarySegments.get(0);
@@ -543,15 +585,31 @@ public final class MergeOrchestrator {
                         io.netty.buffer.Unpooled.wrappedBuffer(mapped));
                 SegmentReader snapshotReader = new SegmentReader(
                         firstSeg.getFileName().toString(), firstSegBuf);
+                int srcGamePacketOrd = snapshotReader.registry().indexOf(ActionType.GAME_PACKET);
                 while (snapshotReader.hasNext() && snapshotReader.isPeekInSnapshot()) {
                     SegmentReader.RawAction raw = snapshotReader.nextRaw();
                     currentWriter.writeSnapshotAction(raw.ordinal(), raw.payload());
+                    // Pre-register PIU(ADD_PLAYER) UUIDs from the snapshot so the live
+                    // stream's first PIU for each player is detected as a duplicate and
+                    // dropped — otherwise each player appears twice in chat (once from
+                    // snapshot, once from the live broadcast at primary's join tick).
+                    if (raw.ordinal() == srcGamePacketOrd && raw.payload().length > 0) {
+                        int pidIn = PacketClassifier.readPacketId(raw.payload());
+                        if (snapshotPiuId >= 0 && pidIn == snapshotPiuId) {
+                            playerInfoDeduper.shouldEmitInfoUpdate(raw.payload());
+                            snapshotPiuSeenCount++;
+                        }
+                    }
                     snapshotActionsCopied++;
                 }
             }
         }
-        progress.accept(String.format("Transferred %d snapshot actions from primary source's first segment",
-                snapshotActionsCopied));
+        progress.accept(String.format(
+                "Transferred %d snapshot actions from primary source's first segment "
+                + "(%d PIU pre-registered, dropped=%d)",
+                snapshotActionsCopied,
+                snapshotPiuSeenCount,
+                playerInfoDeduper.duplicateAddDropped()));
         currentWriter.endSnapshot();
 
         // Open streaming file for c0.flashback — avoids accumulating the entire live stream
@@ -585,7 +643,6 @@ public final class MergeOrchestrator {
         int idForgetLevelChunk = -1;
         int idRemoveEntities = -1;
         int idLevelChunkWithLight = -1;
-        int idPlayerInfoUpdate = -1;
         int idPlayerInfoRemove = -1;
         int idMoveEntityPos = -1;
         int idMoveEntityRot = -1;
@@ -593,12 +650,17 @@ public final class MergeOrchestrator {
         int idTeleportEntity = -1;
         int idEntityPositionSync = -1;
         int idRotateHead = -1;
+        int idSystemChat = -1;
+        int idDisguisedChat = -1;
+        int idPlayerChat = -1;
         try {
+            idSystemChat = GamePacketDispatch.findId(PlayPackets.SYSTEM_CHAT);
+            try { idDisguisedChat = GamePacketDispatch.findId(PlayPackets.DISGUISED_CHAT); } catch (Throwable ignore) {}
+            try { idPlayerChat = GamePacketDispatch.findId(PlayPackets.PLAYER_CHAT); } catch (Throwable ignore) {}
             idPlayerPosition = GamePacketDispatch.findId(PlayPackets.PLAYER_POSITION);
             idForgetLevelChunk = GamePacketDispatch.findId(PlayPackets.FORGET_LEVEL_CHUNK);
             idRemoveEntities = GamePacketDispatch.findId(PlayPackets.REMOVE_ENTITIES);
             idLevelChunkWithLight = GamePacketDispatch.findId(PlayPackets.LEVEL_CHUNK_WITH_LIGHT);
-            idPlayerInfoUpdate = GamePacketDispatch.findId(PlayPackets.PLAYER_INFO_UPDATE);
             idPlayerInfoRemove = GamePacketDispatch.findId(PlayPackets.PLAYER_INFO_REMOVE);
             idMoveEntityPos = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_POS);
             idMoveEntityRot = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_ROT);
@@ -614,10 +676,6 @@ public final class MergeOrchestrator {
         // Prevents multiple POVs from overwriting the same chunk state on playback.
         java.util.Set<Long> emittedChunkHashes = new java.util.HashSet<>();
 
-        // PLAYER_INFO_UPDATE / PLAYER_INFO_REMOVE dedup by UUID — eliminates the duplicate
-        // "joined the game" chat lines that the GlobalDeduper content-hash misses (ping byte
-        // differs across sources for the same join event).
-        PlayerInfoUpdateDeduper playerInfoDeduper = new PlayerInfoUpdateDeduper();
 
         // 2. One cursor per source, priority-queue ordered by (tickAbs, sourceIdx)
         record SourceCursor(int sourceIdx, Iterator<PacketEntry> it, PacketEntry head) {}
@@ -641,6 +699,12 @@ public final class MergeOrchestrator {
 
             int tickAbsEmitted = 0;
             long processed = 0;
+            int chatDroppedSecondary = 0;
+            int chatEmittedPrimary = 0;
+            int chatDroppedPrimaryDup = 0;
+            // Content-hash → tickAbs of last emission; lets us dedup SystemChat broadcasts
+            // whose bytes are identical but land at different ticks across reconstruction.
+            java.util.HashMap<Long, Integer> chatRecentContent = new java.util.HashMap<>();
             int lastPurge = 0;
             boolean warnedOutOfOrder = false;
 
@@ -947,13 +1011,50 @@ public final class MergeOrchestrator {
                     case GLOBAL -> {
                         if (cur.head().action() instanceof Action.GamePacket gp) {
                             int pid = PacketClassifier.readPacketId(gp.bytes());
-                            // UUID-level dedup for player-list updates — GlobalDeduper's
-                            // content hash misses these because per-source latency differs.
+                            // Stage 1: drop any secondary's PIU outright (covers cross-source
+                            // dups, server broadcasts the same events to every client).
+                            // Stage 2: even within primary's stream, use the UUID-level
+                            // deduper to catch the snapshot/live double-emission pattern
+                            // (each player appears in the c0 snapshot AND in a live PIU at
+                            // primary's join time).
                             boolean playerInfoDrop = false;
-                            if (idPlayerInfoUpdate >= 0 && pid == idPlayerInfoUpdate) {
-                                playerInfoDrop = !playerInfoDeduper.shouldEmitInfoUpdate(gp.bytes());
+                            if (snapshotPiuId >= 0 && pid == snapshotPiuId) {
+                                if (cur.sourceIdx() != ctx.primarySourceIdx) {
+                                    playerInfoDrop = true;
+                                } else if (!playerInfoDeduper.shouldEmitInfoUpdate(gp.bytes())) {
+                                    playerInfoDrop = true;
+                                }
                             } else if (idPlayerInfoRemove >= 0 && pid == idPlayerInfoRemove) {
-                                playerInfoDeduper.shouldEmitInfoRemove(gp.bytes());
+                                if (cur.sourceIdx() != ctx.primarySourceIdx) {
+                                    playerInfoDrop = true;
+                                } else {
+                                    playerInfoDeduper.shouldEmitInfoRemove(gp.bytes());
+                                }
+                            } else if (idSystemChat >= 0 && pid == idSystemChat) {
+                                // Drop ALL secondary system chat. For primary's own stream,
+                                // also dedup by content hash + sliding tick window — clock
+                                // skew or message reconstruction can produce two SystemChat
+                                // packets with identical visible text at slightly different
+                                // absTicks, and the strict (pid, tickAbs, hash) GlobalDeduper
+                                // misses them.
+                                if (cur.sourceIdx() != ctx.primarySourceIdx) {
+                                    playerInfoDrop = true;
+                                    chatDroppedSecondary++;
+                                } else {
+                                    long contentHash = contentHash(gp.bytes());
+                                    Integer lastSeen = chatRecentContent.get(contentHash);
+                                    if (lastSeen != null && tickAbs - lastSeen < CHAT_DEDUP_WINDOW) {
+                                        playerInfoDrop = true;
+                                        chatDroppedPrimaryDup++;
+                                    } else {
+                                        chatRecentContent.put(contentHash, tickAbs);
+                                        chatEmittedPrimary++;
+                                    }
+                                }
+                            } else if (cur.sourceIdx() != ctx.primarySourceIdx
+                                    && ((idDisguisedChat >= 0 && pid == idDisguisedChat)
+                                        || (idPlayerChat >= 0 && pid == idPlayerChat))) {
+                                playerInfoDrop = true;
                             }
                             if (playerInfoDrop) {
                                 ctx.report.stats.globalPacketsDeduped++;
@@ -1019,6 +1120,10 @@ public final class MergeOrchestrator {
             // Update block LWW stats
             ctx.report.stats.blocksLwwConflicts   = worldMerger.lwwConflicts();
             ctx.report.stats.blocksLwwOverwrites  = worldMerger.lwwOverwrites();
+            progress.accept(String.format(
+                    "ChatDiag: primary emitted=%d, primary-dup dropped=%d, secondary dropped=%d, PIU dropped=%d",
+                    chatEmittedPrimary, chatDroppedPrimaryDup, chatDroppedSecondary,
+                    playerInfoDeduper.duplicateAddDropped()));
         } finally {
             // 3. Close the current SegmentWriter (releases FileChannel + Netty buffers).
             // Calling close() is a no-op if finishStreaming() already ran; otherwise it

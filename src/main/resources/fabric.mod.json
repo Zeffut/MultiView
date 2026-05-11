@@ -16,7 +16,8 @@
   "environment": "client",
   "entrypoints": {
     "client": [
-      "fr.zeffut.multiview.MultiViewMod"
+      "fr.zeffut.multiview.MultiViewMod",
+      "fr.zeffut.multiview.test.TestHarness"
     ]
   },
   "depends": {

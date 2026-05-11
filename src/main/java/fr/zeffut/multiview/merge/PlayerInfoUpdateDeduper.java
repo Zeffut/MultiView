@@ -53,6 +53,8 @@ public final class PlayerInfoUpdateDeduper {
     private final Set<UUID> announcedUuids = new HashSet<>();
     private int duplicateAddDropped;
     private int removesProcessed;
+    private int codecDecodedCount;
+    private int codecFailureCount;
     /** True if we successfully verified the MC codec is available (Bootstrap initialized). */
     private final boolean codecAvailable;
 
@@ -103,6 +105,12 @@ public final class PlayerInfoUpdateDeduper {
                     }
                 }
 
+                codecDecodedCount++;
+                if (codecDecodedCount <= 3) {
+                    LOG.warn("[PIU-DIAG] codec decoded ok #{}: actions={} entries={} allKnown={}",
+                            codecDecodedCount, pkt.getActions(), pkt.getEntries().size(), allKnown);
+                }
+
                 if (allKnown) {
                     duplicateAddDropped++;
                     return false;
@@ -110,9 +118,10 @@ public final class PlayerInfoUpdateDeduper {
                 announcedUuids.addAll(newUuids);
                 return true;
             } catch (Throwable t) {
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug("PlayerInfoUpdateDeduper: codec decode failed, falling back: "
-                            + t.getMessage());
+                codecFailureCount++;
+                if (codecFailureCount <= 3) {
+                    LOG.warn("[PIU-DIAG] codec decode failed #{}: {} {}",
+                            codecFailureCount, t.getClass().getSimpleName(), t.getMessage());
                 }
                 // fall through to heuristic
             }
