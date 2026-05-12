@@ -6,14 +6,14 @@ import fr.zeffut.multiview.format.FlashbackReplay;
 import fr.zeffut.multiview.format.PacketEntry;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import net.minecraft.network.RegistryByteBuf;
-import net.minecraft.network.codec.PacketCodec;
-import net.minecraft.network.listener.ClientPlayPacketListener;
-import net.minecraft.network.packet.Packet;
-import net.minecraft.network.packet.s2c.play.EntityS2CPacket;
-import net.minecraft.network.packet.s2c.play.EntitySpawnS2CPacket;
-import net.minecraft.network.state.PlayStateFactories;
-import net.minecraft.registry.DynamicRegistryManager;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.game.ClientGamePacketListener;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientboundMoveEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.GameProtocols;
+import net.minecraft.core.RegistryAccess;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 
@@ -48,7 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  *   [VarInt packetId] [corps du packet]
  * </pre>
  * Le {@code packetId} est l'identifiant numérique du packet dans le protocole PLAY
- * (ex. : 0x1F pour {@code EntityS2CPacket.MoveRelative} en 1.21.11).
+ * (ex. : 0x1F pour {@code ClientboundMoveEntityPacket.MoveRelative} en 1.21.11).
  * <p>
  * Conclusion : <b>OUI, le payload inclut bien un VarInt packetId en tête</b>.
  * Le reste est le corps du packet sérialisé tel que Minecraft l'enverrait sur le
@@ -58,21 +58,21 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  *
  * En 1.21.x (Yarn), l'API publique est :
  * <pre>
- *   // PlayStateFactories.S2C est un NetworkStateFactory&lt;ClientPlayPacketListener, RegistryByteBuf&gt;
- *   NetworkState&lt;ClientPlayPacketListener&gt; state =
- *       PlayStateFactories.S2C.bind(RegistryByteBuf.makeFactory(registryManager));
- *   PacketCodec&lt;ByteBuf, Packet&lt;? super ClientPlayPacketListener&gt;&gt; codec = state.codec();
+ *   // GameProtocols.S2C est un NetworkStateFactory&lt;ClientGamePacketListener, RegistryFriendlyByteBuf&gt;
+ *   NetworkState&lt;ClientGamePacketListener&gt; state =
+ *       GameProtocols.S2C.bind(RegistryFriendlyByteBuf.makeFactory(registryManager));
+ *   StreamCodec&lt;ByteBuf, Packet&lt;? super ClientGamePacketListener&gt;&gt; codec = state.codec();
  *
  *   // Décode depuis un ByteBuf contenant [VarInt packetId + corps]
- *   Packet&lt;? super ClientPlayPacketListener&gt; pkt = codec.decode(rawBuf);
+ *   Packet&lt;? super ClientGamePacketListener&gt; pkt = codec.decode(rawBuf);
  *
  *   // Re-encode dans un nouveau ByteBuf
  *   ByteBuf out = Unpooled.buffer();
  *   codec.encode(out, pkt);  // => [VarInt packetId + corps]
  * </pre>
- * <b>Caveat runtime :</b> {@code PlayStateFactories.S2C} initialise ses codecs
+ * <b>Caveat runtime :</b> {@code GameProtocols.S2C} initialise ses codecs
  * statiquement ; ceux-ci dépendent des registres Minecraft (ex.
- * {@code EntitySpawnS2CPacket} encode un {@code EntityType}). Si les registres
+ * {@code ClientboundAddEntityPacket} encode un {@code EntityType}). Si les registres
  * Vanilla ne sont pas initialisés ({@code Bootstrap.initialize()}), on obtient une
  * NPE dans le chemin de décodage des packets qui lisent un registre. Les tests qui
  * utilisent ce codec doivent donc appeler {@code Bootstrap.initialize()} une fois
@@ -88,24 +88,24 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  *
  * <b>Approche A — décodage complet via codec (recommandée quand Bootstrap OK)</b>
  * <pre>{@code
- * NetworkState<ClientPlayPacketListener> state =
- *     PlayStateFactories.S2C.bind(RegistryByteBuf.makeFactory(registryManager));
- * PacketCodec<ByteBuf, Packet<? super ClientPlayPacketListener>> codec = state.codec();
+ * NetworkState<ClientGamePacketListener> state =
+ *     GameProtocols.S2C.bind(RegistryFriendlyByteBuf.makeFactory(registryManager));
+ * StreamCodec<ByteBuf, Packet<? super ClientGamePacketListener>> codec = state.codec();
  *
  * // Pour chaque payload :
  * ByteBuf rawBuf = Unpooled.wrappedBuffer(payload);
  * Packet<?> pkt = codec.decode(rawBuf);
  *
- * if (pkt instanceof EntitySpawnS2CPacket spawn) {
+ * if (pkt instanceof ClientboundAddEntityPacket spawn) {
  *     int oldId = spawn.getEntityId();
  *     int newId = idMap.remap(oldId);
- *     // EntitySpawnS2CPacket expose un constructeur complet (tous champs publics)
- *     pkt = new EntitySpawnS2CPacket(newId, spawn.getUuid(), spawn.getX(),
+ *     // ClientboundAddEntityPacket expose un constructeur complet (tous champs publics)
+ *     pkt = new ClientboundAddEntityPacket(newId, spawn.getUuid(), spawn.getX(),
  *         spawn.getY(), spawn.getZ(), spawn.getYaw(), spawn.getPitch(),
  *         spawn.getEntityType(), spawn.getEntityData(), spawn.getVelocity(),
  *         spawn.getHeadYaw());
- * } else if (pkt instanceof EntityS2CPacket move) {
- *     // EntityS2CPacket stocke l'entity ID dans le champ protected `id`
+ * } else if (pkt instanceof ClientboundMoveEntityPacket move) {
+ *     // ClientboundMoveEntityPacket stocke l'entity ID dans le champ protected `id`
  *     // — pas de setter, il faut utiliser la manipulation directe (Approach B)
  *     // ou la réflexion.
  * }
@@ -119,7 +119,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  *
  * <b>Approche B — manipulation binaire directe (fallback, sans Bootstrap)</b>
  * <p>
- * Pour {@code EntityS2CPacket.*}, le format wire binaire est :
+ * Pour {@code ClientboundMoveEntityPacket.*}, le format wire binaire est :
  * <pre>
  *   VarInt packetId
  *   VarInt entityId
@@ -134,9 +134,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * nécessite pas Bootstrap et permet des tests unitaires purs.
  *
  * <b>Décision recommandée pour Task 8 :</b> utiliser l'Approche A (codec complet)
- * pour les packets ayant un constructeur complet ({@code EntitySpawnS2CPacket},
+ * pour les packets ayant un constructeur complet ({@code ClientboundAddEntityPacket},
  * {@code EntityAnimationS2CPacket}, {@code EntityStatusS2CPacket}, etc.), et
- * l'Approche B (manipulation binaire) pour {@code EntityS2CPacket.*} (MoveRelative,
+ * l'Approche B (manipulation binaire) pour {@code ClientboundMoveEntityPacket.*} (MoveRelative,
  * Rotate, RotateAndMoveRelative) où le champ {@code id} est {@code protected} et il
  * n'y a pas de constructeur "par copie avec nouvel ID".
  */
@@ -220,7 +220,7 @@ class PacketCodecSpikeTest {
 
     /**
      * BONUS — Step 3 avancé : tente de décoder un GamePacket dont le packetId
-     * correspond à {@code EntityS2CPacket.MoveRelative} (0x2C en 1.21.x) en
+     * correspond à {@code ClientboundMoveEntityPacket.MoveRelative} (0x2C en 1.21.x) en
      * utilisant la manipulation binaire directe (Approche B), qui ne nécessite
      * pas Bootstrap.
      * <p>
@@ -290,7 +290,7 @@ class PacketCodecSpikeTest {
 
     /**
      * Recrée un payload en remplaçant le VarInt qui suit le VarInt packetId
-     * (= l'entityId pour les packets EntityS2CPacket.*).
+     * (= l'entityId pour les packets ClientboundMoveEntityPacket.*).
      * Préserve tous les autres bytes intact.
      */
     private static byte[] remapFirstVarIntAfterPacketId(byte[] original, int newEntityId) {

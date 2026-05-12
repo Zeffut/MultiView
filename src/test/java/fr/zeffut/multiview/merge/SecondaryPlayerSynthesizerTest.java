@@ -116,7 +116,7 @@ class SecondaryPlayerSynthesizerTest {
     @Test
     void synthesizer_isAvailableReturnsFalseOrTrue() {
         // In tests without Bootstrap, isAvailable() depends on whether
-        // PlayStateFactories can be loaded.  We simply assert it doesn't throw.
+        // GameProtocols can be loaded.  We simply assert it doesn't throw.
         IdRemapper remapper = new IdRemapper();
         SecondaryPlayerSynthesizer synth = new SecondaryPlayerSynthesizer(remapper);
         // isAvailable() is either true or false — both are valid depending on environment

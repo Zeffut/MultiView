@@ -9,8 +9,8 @@ import fr.zeffut.multiview.format.Action;
 import fr.zeffut.multiview.format.FlashbackReader;
 import fr.zeffut.multiview.format.FlashbackReplay;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -32,17 +32,17 @@ public final class InspectCommand {
     }
 
     private static int inspect(FabricClientCommandSource src, String replayName) {
-        Path replayFolder = MinecraftClient.getInstance().runDirectory.toPath()
+        Path replayFolder = Minecraft.getInstance().gameDirectory.toPath()
                 .resolve("replay").resolve(replayName);
         try {
             FlashbackReplay replay = FlashbackReader.open(replayFolder);
-            src.sendFeedback(Text.literal("UUID: " + replay.metadata().uuid()));
-            src.sendFeedback(Text.literal("World: " + replay.metadata().worldName()));
-            src.sendFeedback(Text.literal("MC: " + replay.metadata().versionString()
+            src.sendFeedback(Component.literal("UUID: " + replay.metadata().uuid()));
+            src.sendFeedback(Component.literal("World: " + replay.metadata().worldName()));
+            src.sendFeedback(Component.literal("MC: " + replay.metadata().versionString()
                     + " (protocol " + replay.metadata().protocolVersion() + ")"));
-            src.sendFeedback(Text.literal("Total ticks (metadata): " + replay.metadata().totalTicks()));
-            src.sendFeedback(Text.literal("Segments: " + replay.segmentPaths().size()));
-            src.sendFeedback(Text.literal("Markers: " + replay.metadata().markers().size()));
+            src.sendFeedback(Component.literal("Total ticks (metadata): " + replay.metadata().totalTicks()));
+            src.sendFeedback(Component.literal("Segments: " + replay.segmentPaths().size()));
+            src.sendFeedback(Component.literal("Markers: " + replay.metadata().markers().size()));
 
             Map<String, Integer> actionHistogram = new HashMap<>();
             int[] stats = { 0, 0, 0 }; // [entriesCount, maxTick, snapshotCount]
@@ -63,14 +63,14 @@ public final class InspectCommand {
                 };
                 actionHistogram.merge(bucket, 1, Integer::sum);
             });
-            src.sendFeedback(Text.literal("Entries decoded: " + stats[0] + " | max tick seen: " + stats[1]));
-            src.sendFeedback(Text.literal("Snapshot entries: " + stats[2]
+            src.sendFeedback(Component.literal("Entries decoded: " + stats[0] + " | max tick seen: " + stats[1]));
+            src.sendFeedback(Component.literal("Snapshot entries: " + stats[2]
                     + " / live: " + (stats[0] - stats[2])));
             MultiViewMod.LOGGER.info("[inspect] {} — histogram: {}", replayName, actionHistogram);
             return Command.SINGLE_SUCCESS;
         } catch (IOException e) {
             MultiViewMod.LOGGER.error("Failed to inspect replay {}", replayName, e);
-            src.sendError(Text.literal("Failed: " + e.getMessage()));
+            src.sendError(Component.literal("Failed: " + e.getMessage()));
             return 0;
         }
     }

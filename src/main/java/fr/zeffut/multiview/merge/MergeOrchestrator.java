@@ -15,9 +15,9 @@ import fr.zeffut.multiview.format.SegmentWriter;
 import fr.zeffut.multiview.format.VarInts;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import net.minecraft.network.PacketByteBuf;
-import net.minecraft.network.packet.PlayPackets;
-import net.minecraft.network.packet.s2c.play.PlayerPositionLookS2CPacket;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.protocol.game.GamePacketTypes;
+import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -511,7 +511,7 @@ public final class MergeOrchestrator {
     private static final int SEGMENT_TICKS = 6000;
 
     /**
-     * Decodes a SYSTEM_CHAT payload via the MC codec and returns the visible Text content
+     * Decodes a SYSTEM_CHAT payload via the MC codec and returns the visible Component content
      * as a flat string (or {@code null} on decode failure). Used to dedup logically-identical
      * "X joined the game" broadcasts whose raw bytes differ.
      */
@@ -519,10 +519,10 @@ public final class MergeOrchestrator {
         try {
             io.netty.buffer.ByteBuf raw = io.netty.buffer.Unpooled.wrappedBuffer(payload);
             VarInts.readVarInt(raw); // skip packetId
-            net.minecraft.network.RegistryByteBuf rbuf = new net.minecraft.network.RegistryByteBuf(
-                    raw, net.minecraft.registry.DynamicRegistryManager.EMPTY);
-            net.minecraft.network.packet.s2c.play.GameMessageS2CPacket pkt =
-                    net.minecraft.network.packet.s2c.play.GameMessageS2CPacket.CODEC.decode(rbuf);
+            net.minecraft.network.RegistryFriendlyByteBuf rbuf = new net.minecraft.network.RegistryFriendlyByteBuf(
+                    raw, net.minecraft.core.RegistryAccess.EMPTY);
+            net.minecraft.network.protocol.game.ClientboundSystemChatPacket pkt =
+                    net.minecraft.network.protocol.game.ClientboundSystemChatPacket.STREAM_CODEC.decode(rbuf);
             return pkt.content().getString();
         } catch (Throwable t) {
             return null;
@@ -573,7 +573,7 @@ public final class MergeOrchestrator {
         PlayerInfoUpdateDeduper playerInfoDeduper = new PlayerInfoUpdateDeduper();
         int idPlayerInfoUpdate;
         try {
-            idPlayerInfoUpdate = GamePacketDispatch.findId(PlayPackets.PLAYER_INFO_UPDATE);
+            idPlayerInfoUpdate = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_PLAYER_INFO_UPDATE);
         } catch (Throwable t) {
             idPlayerInfoUpdate = -1;
         }
@@ -673,20 +673,20 @@ public final class MergeOrchestrator {
         int idDisguisedChat = -1;
         int idPlayerChat = -1;
         try {
-            idSystemChat = GamePacketDispatch.findId(PlayPackets.SYSTEM_CHAT);
-            try { idDisguisedChat = GamePacketDispatch.findId(PlayPackets.DISGUISED_CHAT); } catch (Throwable ignore) {}
-            try { idPlayerChat = GamePacketDispatch.findId(PlayPackets.PLAYER_CHAT); } catch (Throwable ignore) {}
-            idPlayerPosition = GamePacketDispatch.findId(PlayPackets.PLAYER_POSITION);
-            idForgetLevelChunk = GamePacketDispatch.findId(PlayPackets.FORGET_LEVEL_CHUNK);
-            idRemoveEntities = GamePacketDispatch.findId(PlayPackets.REMOVE_ENTITIES);
-            idLevelChunkWithLight = GamePacketDispatch.findId(PlayPackets.LEVEL_CHUNK_WITH_LIGHT);
-            idPlayerInfoRemove = GamePacketDispatch.findId(PlayPackets.PLAYER_INFO_REMOVE);
-            idMoveEntityPos = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_POS);
-            idMoveEntityRot = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_ROT);
-            idMoveEntityPosRot = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_POS_ROT);
-            idTeleportEntity = GamePacketDispatch.findId(PlayPackets.TELEPORT_ENTITY);
-            idEntityPositionSync = GamePacketDispatch.findId(PlayPackets.ENTITY_POSITION_SYNC);
-            idRotateHead = GamePacketDispatch.findId(PlayPackets.ROTATE_HEAD);
+            idSystemChat = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_SYSTEM_CHAT);
+            try { idDisguisedChat = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_DISGUISED_CHAT); } catch (Throwable ignore) {}
+            try { idPlayerChat = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_PLAYER_CHAT); } catch (Throwable ignore) {}
+            idPlayerPosition = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_PLAYER_POSITION);
+            idForgetLevelChunk = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_FORGET_LEVEL_CHUNK);
+            idRemoveEntities = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_REMOVE_ENTITIES);
+            idLevelChunkWithLight = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_LEVEL_CHUNK_WITH_LIGHT);
+            idPlayerInfoRemove = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_PLAYER_INFO_REMOVE);
+            idMoveEntityPos = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_MOVE_ENTITY_POS);
+            idMoveEntityRot = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_MOVE_ENTITY_ROT);
+            idMoveEntityPosRot = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_MOVE_ENTITY_POS_ROT);
+            idTeleportEntity = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_TELEPORT_ENTITY);
+            idEntityPositionSync = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_ENTITY_POSITION_SYNC);
+            idRotateHead = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_ROTATE_HEAD);
         } catch (Throwable t) {
             LOG.warn("MergeOrchestrator: could not resolve special packet ids: "
                     + t.getClass().getSimpleName());
@@ -724,7 +724,7 @@ public final class MergeOrchestrator {
             int chatNullTextCount = 0;
             int chatJoinedSamplesLogged = 0;
             // Visible-text dedup: each unique chat string emitted at most once. Catches the
-            // "same chat, different bytes" pattern (Text components with dynamic fields like
+            // "same chat, different bytes" pattern (Component components with dynamic fields like
             // signatures / timestamps that defeat byte-level dedup).
             java.util.HashSet<String> chatRecentChatText = new java.util.HashSet<>();
             int lastPurge = 0;
@@ -1325,8 +1325,8 @@ public final class MergeOrchestrator {
     }
 
     /**
-     * Attempts to translate a {@code PlayerPositionLookS2CPacket} payload into a
-     * {@code TeleportEntity} (EntityPositionS2CPacket) payload targeting
+     * Attempts to translate a {@code ClientboundPlayerPositionPacket} payload into a
+     * {@code TeleportEntity} (ClientboundEntityPositionSyncPacket) payload targeting
      * {@code fakeEntityId}.
      *
      * <p>PLAYER_POSITION uses relative-position flags that describe which components
@@ -1346,15 +1346,15 @@ public final class MergeOrchestrator {
             io.netty.buffer.ByteBuf raw =
                     io.netty.buffer.Unpooled.wrappedBuffer(playerPositionPayload);
             VarInts.readVarInt(raw); // skip packetId
-            PacketByteBuf pbuf = new PacketByteBuf(raw);
-            PlayerPositionLookS2CPacket decoded = PlayerPositionLookS2CPacket.CODEC.decode(pbuf);
+            FriendlyByteBuf pbuf = new FriendlyByteBuf(raw);
+            ClientboundPlayerPositionPacket decoded = ClientboundPlayerPositionPacket.STREAM_CODEC.decode(pbuf);
             // Skip if any relative flag is set — absolute position unknown.
             if (!decoded.relatives().isEmpty()) return null;
-            net.minecraft.entity.EntityPosition pos = decoded.change();
-            net.minecraft.util.math.Vec3d v = pos.position();
+            net.minecraft.world.entity.PositionMoveRotation pos = decoded.change();
+            net.minecraft.world.phys.Vec3 v = pos.position();
             return synth.synthesizeTeleport(fakeEntityId,
                     v.x, v.y, v.z,
-                    pos.yaw(), pos.pitch());
+                    pos.yRot(), pos.xRot());
         } catch (Throwable t) {
             // Decode failure is non-fatal; caller will drop.
             return null;

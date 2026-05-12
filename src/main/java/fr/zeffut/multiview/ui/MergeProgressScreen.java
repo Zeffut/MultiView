@@ -3,10 +3,10 @@ package fr.zeffut.multiview.ui;
 import com.moulberry.flashback.screen.select_replay.ReplaySelectionList;
 import com.moulberry.flashback.screen.select_replay.SelectReplayScreen;
 import fr.zeffut.multiview.MultiViewMod;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.text.Text;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.network.chat.Component;
 
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -35,7 +35,7 @@ public class MergeProgressScreen extends Screen {
             java.util.regex.Pattern.compile("(\\d+)\\s*/\\s*(\\d+)");
 
     public MergeProgressScreen(Screen previousScreen) {
-        super(Text.translatable("multiview.merge_progress.title"));
+        super(Component.translatable("multiview.merge_progress.title"));
         this.previousScreen = previousScreen;
     }
 
@@ -48,13 +48,13 @@ public class MergeProgressScreen extends Screen {
         int btnX = this.width / 2 - btnW / 2;
         int btnY = this.height / 2 + 40;
 
-        ButtonWidget backBtn = ButtonWidget.builder(
-                        Text.translatable("gui.back"),
-                        btn -> this.client.setScreen(this.previousScreen))
-                .dimensions(btnX, btnY, btnW, 20)
+        Button backBtn = Button.builder(
+                        Component.translatable("gui.back"),
+                        btn -> this.minecraft.setScreen(this.previousScreen))
+                .bounds(btnX, btnY, btnW, 20)
                 .build();
         backBtn.active = false;
-        this.addDrawableChild(backBtn);
+        this.addRenderableWidget(backBtn);
     }
 
     /**
@@ -93,18 +93,18 @@ public class MergeProgressScreen extends Screen {
     @Override
     public void tick() {
         tickCount++;
-        if (done && this.client != null) {
+        if (done && this.minecraft != null) {
             // Reload the replay list so the newly-created merge zip is visible immediately
             if (this.previousScreen instanceof SelectReplayScreen srs) {
                 reloadReplayList(srs);
             }
             // Return to the select-replay screen (or null if there was none)
-            this.client.setScreen(this.previousScreen);
+            this.minecraft.setScreen(this.previousScreen);
         }
         // Activate back button once done or errored
         if ((done || errorMessage != null) && this.children() != null) {
             for (var child : this.children()) {
-                if (child instanceof ButtonWidget btn) {
+                if (child instanceof Button btn) {
                     btn.active = true;
                 }
             }
@@ -112,7 +112,7 @@ public class MergeProgressScreen extends Screen {
     }
 
     @Override
-    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+    public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
         // super.render already calls renderBackground internally; calling it
         // again triggered "Can only blur once per frame" in 1.21.x.
         super.render(context, mouseX, mouseY, delta);
@@ -130,26 +130,26 @@ public class MergeProgressScreen extends Screen {
         int barY = centerY + 5;
 
         // Title
-        context.drawCenteredTextWithShadow(this.textRenderer,
-                Text.translatable("multiview.merge_progress.title"),
+        context.drawCenteredString(this.font,
+                Component.translatable("multiview.merge_progress.title"),
                 centerX, centerY - 60, 0xFFFFFF);
 
         // Phase text with animated dots — dedicated row with its own background
         String phase = currentPhase.get();
         int phaseY = centerY - 30;
         if (errorMessage != null) {
-            context.drawCenteredTextWithShadow(this.textRenderer,
-                    Text.literal(errorMessage),
+            context.drawCenteredString(this.font,
+                    Component.literal(errorMessage),
                     centerX, phaseY, 0xFFFF5555);
         } else if (done) {
-            context.drawCenteredTextWithShadow(this.textRenderer,
-                    Text.translatable("multiview.merge_progress.done"),
+            context.drawCenteredString(this.font,
+                    Component.translatable("multiview.merge_progress.done"),
                     centerX, phaseY, 0xFF55FF55);
         } else {
             int dots = (tickCount / 10) % 4;
             String dotStr = ".".repeat(dots) + " ".repeat(3 - dots);
-            context.drawCenteredTextWithShadow(this.textRenderer,
-                    Text.literal(phase + dotStr),
+            context.drawCenteredString(this.font,
+                    Component.literal(phase + dotStr),
                     centerX, phaseY, 0xFFCCCCCC);
         }
 
@@ -165,8 +165,8 @@ public class MergeProgressScreen extends Screen {
                 int fillW = (int) (barW * progress);
                 context.fill(barX, barY, barX + fillW, barY + barH, 0xFF4CAF50);
                 String pct = String.format("%.1f%%", progress * 100.0);
-                context.drawCenteredTextWithShadow(this.textRenderer,
-                        Text.literal(pct), centerX, barY + barH + 4, 0xFFFFFF);
+                context.drawCenteredString(this.font,
+                        Component.literal(pct), centerX, barY + barH + 4, 0xFFFFFF);
             } else {
                 int pulseW = 60;
                 int pulseX = barX + (int) ((barW - pulseW) * ((tickCount % 60) / 60.0));

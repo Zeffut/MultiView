@@ -10,8 +10,8 @@ import fr.zeffut.multiview.merge.MergeOptions;
 import fr.zeffut.multiview.merge.MergeOrchestrator;
 import fr.zeffut.multiview.merge.MergeReport;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -82,18 +82,18 @@ public final class MergeCommand {
 
         MergeOptions options = new MergeOptions(sources, dest, Map.of(), false);
 
-        source.sendFeedback(Text.literal(
+        source.sendFeedback(Component.literal(
                 "[MultiView] \u26a0 /mv merge is deprecated — use the Merge button in the Select Replay screen (Phase 5)."));
-        source.sendFeedback(Text.literal("[MultiView] Starting merge of " + sourceNames.size() + " sources..."));
+        source.sendFeedback(Component.literal("[MultiView] Starting merge of " + sourceNames.size() + " sources..."));
         EXECUTOR.submit(() -> {
             try {
                 MergeReport report = MergeOrchestrator.run(options, phase -> {
-                    MinecraftClient.getInstance().execute(() ->
-                            source.sendFeedback(Text.literal("[MultiView] " + phase)));
+                    Minecraft.getInstance().execute(() ->
+                            source.sendFeedback(Component.literal("[MultiView] " + phase)));
                 });
                 Path destZip = dest.resolveSibling(dest.getFileName() + ".zip");
-                MinecraftClient.getInstance().execute(() ->
-                        source.sendFeedback(Text.literal(String.format(
+                Minecraft.getInstance().execute(() ->
+                        source.sendFeedback(Component.literal(String.format(
                                 "[MultiView] Done → %s | %d entities merged, %d blocks overwritten, %d globals deduped.",
                                 destZip.toAbsolutePath(),
                                 report.stats.entitiesMergedByUuid + report.stats.entitiesMergedByHeuristic,
@@ -101,8 +101,8 @@ public final class MergeCommand {
                                 report.stats.globalPacketsDeduped))));
             } catch (Throwable t) {
                 LOG.error("[MultiView] Merge failed", t);
-                MinecraftClient.getInstance().execute(() ->
-                        source.sendError(Text.literal("[MultiView] Merge failed: " + t.getMessage())));
+                Minecraft.getInstance().execute(() ->
+                        source.sendError(Component.literal("[MultiView] Merge failed: " + t.getMessage())));
             }
         });
         return Command.SINGLE_SUCCESS;

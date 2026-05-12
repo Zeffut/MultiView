@@ -16,11 +16,11 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.TitleScreen;
-import net.minecraft.client.gui.screen.world.CreateWorldScreen;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.client.gui.screens.worldselection.CreateWorldScreen;
+import net.minecraft.network.chat.Component;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,7 +60,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       line.</li>
  *   <li>Write {@link #RESULT_FILE} as JSON with: merge stats, chat join counts per player,
  *       crash report files created during the run, and pass/fail verdict.</li>
- *   <li>Call {@link MinecraftClient#scheduleStop()} so the JVM exits with code 0.</li>
+ *   <li>Call {@link Minecraft#scheduleStop()} so the JVM exits with code 0.</li>
  * </ol>
  *
  * <h2>Externally</h2>
@@ -130,7 +130,7 @@ public final class TestHarness implements ClientModInitializer {
         // CHAT signature varies between fabric-api versions; GAME alone covers "joined the game".
     }
 
-    private void onClientStarted(MinecraftClient mc) {
+    private void onClientStarted(Minecraft mc) {
         try {
             replayFolder = Flashback.getReplayFolder();
             Path cfg = replayFolder.getParent().getParent().resolve(CONFIG_FILE);
@@ -205,7 +205,7 @@ public final class TestHarness implements ClientModInitializer {
         }
     }
 
-    private void onTick(MinecraftClient mc) {
+    private void onTick(Minecraft mc) {
         // Global watchdog: regardless of phase, force-quit if total elapsed exceeds the
         // configured max. Prevents a stuck MC window when something goes wrong outside
         // any of the per-phase handlers.
@@ -265,7 +265,7 @@ public final class TestHarness implements ClientModInitializer {
             // ReplayServer is available so playback actually progresses. The replay tick
             // counter we record is read from the server (real progression), not the client
             // tick handler (which fires regardless of pause state).
-            if (Flashback.isInReplay() && mc.getServer() instanceof ReplayServer rs) {
+            if (Flashback.isInReplay() && mc.getSingleplayerServer() instanceof ReplayServer rs) {
                 // Force-unpause both the integrated server (which gates server-side ticking
                 // via paused field) AND Flashback's replayPaused flag. The replay's tick()
                 // re-reads paused state from isPaused() each tick, so we must keep both
@@ -296,7 +296,7 @@ public final class TestHarness implements ClientModInitializer {
                 // the race and finishes 90s of playback in 90s.
                 rs.setDesiredTickRate(20f, true);
                 try {
-                    rs.getTickManager().setTickRate(20f);
+                    rs.tickRateManager().setTickRate(20f);
                 } catch (Throwable ignore) {}
                 int replayTick = rs.getReplayTick();
                 if (replayTick != lastReplayTickSeen) {
@@ -331,31 +331,35 @@ public final class TestHarness implements ClientModInitializer {
         }
     }
 
-    private void handleRecordTick(MinecraftClient mc) {
+    private void handleRecordTick(Minecraft mc) {
         switch (phase) {
             case REC_WAIT_TITLE -> {
-                if (mc.currentScreen instanceof TitleScreen) {
-                    phaseLog.add(timestamp() + " title screen — invoking CreateWorldScreen.showTestWorld");
+                if (mc.screen instanceof TitleScreen) {
+                    phaseLog.add(timestamp() + " title screen — invoking CreateWorldScreen.openFresh");
                     try {
-                        CreateWorldScreen.showTestWorld(mc, () -> {});
+                        CreateWorldScreen.openFresh(mc, () -> {});
                         phase = Phase.REC_WAIT_CREATE_SCREEN;
                         recordWaitTicks = 0;
                     } catch (Throwable t) {
-                        errorMessages.add("showTestWorld: " + t.getClass().getSimpleName() + ": " + t.getMessage());
-                        LOG.error("[TestHarness] showTestWorld failed", t);
+                        errorMessages.add("openFresh: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+                        LOG.error("[TestHarness] openFresh failed", t);
                         phase = Phase.DONE; finalizeAndQuit(mc);
                     }
                 }
             }
             case REC_WAIT_CREATE_SCREEN -> {
                 recordWaitTicks++;
-                if (mc.currentScreen instanceof CreateWorldScreen cws) {
+                if (mc.screen instanceof CreateWorldScreen cws) {
                     if (recordWaitTicks == 1) {
                         phaseLog.add(timestamp() + " CreateWorldScreen visible — enumerating widgets");
                         java.util.Set<Object> seen = new java.util.HashSet<>();
                         List<String> labels = new ArrayList<>();
                         collectWidgetLabels(cws, seen, 0, labels);
                         phaseLog.add(timestamp() + " widget labels: " + labels);
+                        if (config.seed != null && !config.seed.isBlank()) {
+                            boolean set = setEditBoxByContextLabel(cws, "seed", config.seed);
+                            phaseLog.add(timestamp() + " set seed=" + config.seed + " success=" + set);
+                        }
                     }
                     if (clickWidgetMatching(cws, "create new world")) {
                         phaseLog.add(timestamp() + " Create button onPress invoked");
@@ -372,7 +376,7 @@ public final class TestHarness implements ClientModInitializer {
             }
             case REC_WAIT_INGAME -> {
                 recordWaitTicks++;
-                if (mc.world != null && mc.player != null && !mc.player.isRemoved()) {
+                if (mc.level != null && mc.player != null && !mc.player.isRemoved()) {
                     if (recordWaitTicks > 60) {
                         phaseLog.add(timestamp() + " in-game (player loaded) — starting Flashback recording");
                         try {
@@ -499,10 +503,75 @@ public final class TestHarness implements ClientModInitializer {
         return false;
     }
 
+    /**
+     * Set the value of the Nth EditBox-class widget in DFS order (0=first encountered).
+     * In CreateWorldScreen: idx=0 → World Name, idx=1 → Seed.
+     */
+    private boolean setEditBoxByContextLabel(Object root, String labelHint, String value) {
+        // We map "seed" → index 1, others can be extended here.
+        int targetIdx = labelHint.equalsIgnoreCase("seed") ? 1 : 0;
+        int[] counter = {0};
+        return setNthEditBox(root, targetIdx, value, new java.util.HashSet<>(), 0, counter);
+    }
+
+    private boolean setNthEditBox(Object node, int targetIdx, String value,
+                                  java.util.Set<Object> seen, int depth, int[] counter) {
+        if (node == null || depth > 12 || !seen.add(node)) return false;
+        String cls = node.getClass().getSimpleName().toLowerCase();
+        String clsFull = node.getClass().getName().toLowerCase();
+        boolean isEditBox = cls.contains("editbox") || cls.contains("textfield")
+                || clsFull.contains(".editbox") || clsFull.contains(".textfield");
+        if (isEditBox) {
+            if (counter[0] == targetIdx) {
+                for (String setter : new String[]{"setValue", "setText"}) {
+                    try {
+                        java.lang.reflect.Method m = node.getClass().getMethod(setter, String.class);
+                        m.invoke(node, value);
+                        return true;
+                    } catch (Throwable ignore) {}
+                    // Walk superclasses for inherited setValue
+                    Class<?> c = node.getClass().getSuperclass();
+                    while (c != null) {
+                        try {
+                            java.lang.reflect.Method m = c.getMethod(setter, String.class);
+                            m.invoke(node, value);
+                            return true;
+                        } catch (Throwable ignore) {}
+                        c = c.getSuperclass();
+                    }
+                }
+                return false;
+            }
+            counter[0]++;
+        }
+        try {
+            java.lang.reflect.Method childrenM = node.getClass().getMethod("children");
+            Object children = childrenM.invoke(node);
+            if (children instanceof List<?> list) {
+                for (Object c : list) if (setNthEditBox(c, targetIdx, value, seen, depth + 1, counter)) return true;
+            }
+        } catch (Throwable ignore) {}
+        for (Object f : reflectFieldValues(node)) {
+            if (f instanceof List<?> list) {
+                for (Object c : list) if (setNthEditBox(c, targetIdx, value, seen, depth + 1, counter)) return true;
+            } else if (f != null && !(f instanceof String) && !(f.getClass().isPrimitive())
+                    && !f.getClass().getName().startsWith("java.")
+                    && !f.getClass().getName().startsWith("com.mojang.")) {
+                if (setNthEditBox(f, targetIdx, value, seen, depth + 1, counter)) return true;
+            }
+        }
+        return false;
+    }
+
     private void collectWidgetLabels(Object node, java.util.Set<Object> seen, int depth, List<String> out) {
         if (node == null || depth > 12 || !seen.add(node) || out.size() > 80) return;
         String msg = getWidgetMessage(node);
-        if (msg != null && !msg.isBlank()) out.add(msg + " <" + node.getClass().getSimpleName() + ">");
+        String cls = node.getClass().getSimpleName();
+        if (msg != null && !msg.isBlank()) {
+            out.add(msg + " <" + cls + ">");
+        } else if (cls.toLowerCase().contains("editbox") || cls.toLowerCase().contains("textfield")) {
+            out.add("(empty-text) <" + cls + ">");
+        }
         try {
             java.lang.reflect.Method childrenM = node.getClass().getMethod("children");
             Object children = childrenM.invoke(node);
@@ -573,7 +642,7 @@ public final class TestHarness implements ClientModInitializer {
         return false;
     }
 
-    private void onChat(Text message, boolean overlay) {
+    private void onChat(Component message, boolean overlay) {
         if (overlay) return;
         if (phase == Phase.IDLE || phase == Phase.DONE) return;
         String s = message.getString();
@@ -592,10 +661,10 @@ public final class TestHarness implements ClientModInitializer {
         }
     }
 
-    private void finalizeAndQuit(MinecraftClient mc) {
+    private void finalizeAndQuit(Minecraft mc) {
         writeResultFile();
         // schedule stop on the next render frame
-        mc.scheduleStop();
+        mc.stop();
     }
 
     /**
@@ -772,6 +841,7 @@ public final class TestHarness implements ClientModInitializer {
         Integer playSeconds;
         Integer playTimeoutSeconds;
         Integer maxRunMinutes;
+        String seed;             // optional fixed seed for record-mode world generation
 
         @Override
         public String toString() {

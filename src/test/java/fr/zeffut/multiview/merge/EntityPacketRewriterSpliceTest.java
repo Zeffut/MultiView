@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * <p>These tests use the package-private static helpers
  * {@code spliceVarIntEntityId} and {@code spliceInt32EntityId} so they
- * do not require Minecraft Bootstrap (no PlayStateFactories) and run purely
+ * do not require Minecraft Bootstrap (no GameProtocols) and run purely
  * as unit tests.
  *
  * <h2>Root-cause regression test</h2>

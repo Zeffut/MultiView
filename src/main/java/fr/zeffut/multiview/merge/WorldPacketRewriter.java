@@ -3,16 +3,16 @@ package fr.zeffut.multiview.merge;
 import fr.zeffut.multiview.format.VarInts;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
-import net.minecraft.network.PacketByteBuf;
-import net.minecraft.network.RegistryByteBuf;
-import net.minecraft.network.packet.PlayPackets;
-import net.minecraft.network.packet.s2c.play.BlockUpdateS2CPacket;
-import net.minecraft.network.packet.s2c.play.ChunkDeltaUpdateS2CPacket;
-import net.minecraft.registry.DynamicRegistryManager;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.ChunkSectionPos;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.protocol.game.GamePacketTypes;
+import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket;
+import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -25,11 +25,11 @@ import org.slf4j.LoggerFactory;
  *
  * <h2>Packet types handled</h2>
  * <ul>
- *   <li><b>BLOCK_UPDATE</b> ({@code BlockUpdateS2CPacket}): single block pos + state.
- *       Decoded via {@code BlockUpdateS2CPacket.CODEC}. If WorldStateMerger rejects the
+ *   <li><b>BLOCK_UPDATE</b> ({@code ClientboundBlockUpdatePacket}): single block pos + state.
+ *       Decoded via {@code ClientboundBlockUpdatePacket.STREAM_CODEC}. If WorldStateMerger rejects the
  *       update (stale tick), {@code null} is returned → packet is dropped by caller.</li>
- *   <li><b>SECTION_BLOCKS_UPDATE</b> ({@code ChunkDeltaUpdateS2CPacket}): batch of block
- *       updates. Decoded via {@code ChunkDeltaUpdateS2CPacket.CODEC}. Each entry is tested
+ *   <li><b>SECTION_BLOCKS_UPDATE</b> ({@code ClientboundSectionBlocksUpdatePacket}): batch of block
+ *       updates. Decoded via {@code ClientboundSectionBlocksUpdatePacket.STREAM_CODEC}. Each entry is tested
  *       against WorldStateMerger; survivors are re-encoded into a new packet. If all entries
  *       are stale, {@code null} is returned.</li>
  *   <li>All other WORLD packets (chunk load/unload, light, block entity, etc.): passthrough.</li>
@@ -47,7 +47,7 @@ import org.slf4j.LoggerFactory;
  * cross-source LWW are rare; one initial dim per source is a sound approximation.
  *
  * <h2>Fallback mode</h2>
- * If MC PlayStateFactories or codecs are unavailable at construction time (e.g. no Bootstrap
+ * If MC GameProtocols or codecs are unavailable at construction time (e.g. no Bootstrap
  * in unit test context), {@code fallbackMode} is set to {@code true} and all packets pass
  * through unchanged, preserving Phase 3 behaviour.
  *
@@ -95,11 +95,11 @@ public final class WorldPacketRewriter {
 
         boolean fb;
         try {
-            idBlockUpdate        = GamePacketDispatch.findId(PlayPackets.BLOCK_UPDATE);
-            idSectionBlocksUpdate = GamePacketDispatch.findId(PlayPackets.SECTION_BLOCKS_UPDATE);
+            idBlockUpdate        = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_BLOCK_UPDATE);
+            idSectionBlocksUpdate = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_SECTION_BLOCKS_UPDATE);
             fb = false;
         } catch (Throwable t) {
-            LOG.warn("WorldPacketRewriter: PlayStateFactories unavailable ("
+            LOG.warn("WorldPacketRewriter: GameProtocols unavailable ("
                     + t.getClass().getSimpleName() + "), block LWW disabled (fallback passthrough).");
             fb = true;
         }
@@ -142,11 +142,11 @@ public final class WorldPacketRewriter {
     // -------------------------------------------------------------------------
 
     /**
-     * Rewrites a {@code BlockUpdateS2CPacket} (BLOCK_UPDATE).
+     * Rewrites a {@code ClientboundBlockUpdatePacket} (BLOCK_UPDATE).
      * Decodes pos + state, calls WorldStateMerger, drops if stale.
      *
-     * <p>{@code BlockUpdateS2CPacket.CODEC} takes a {@link RegistryByteBuf}; we use
-     * {@link DynamicRegistryManager#EMPTY} since BlockState is in the vanilla static
+     * <p>{@code ClientboundBlockUpdatePacket.STREAM_CODEC} takes a {@link RegistryFriendlyByteBuf}; we use
+     * {@link RegistryAccess#EMPTY} since BlockState is in the vanilla static
      * registry and does not require a dynamic registry.
      *
      * @return payload (possibly the original reference if accepted), or {@code null} to drop
@@ -161,12 +161,12 @@ public final class WorldPacketRewriter {
 
         // Decode body
         ByteBuf bodyBuf = raw.slice(bodyStart, raw.readableBytes());
-        RegistryByteBuf registryBuf = new RegistryByteBuf(bodyBuf, DynamicRegistryManager.EMPTY);
-        BlockUpdateS2CPacket pkt = BlockUpdateS2CPacket.CODEC.decode(registryBuf);
+        RegistryFriendlyByteBuf registryBuf = new RegistryFriendlyByteBuf(bodyBuf, RegistryAccess.EMPTY);
+        ClientboundBlockUpdatePacket pkt = ClientboundBlockUpdatePacket.STREAM_CODEC.decode(registryBuf);
 
         BlockPos pos = pkt.getPos();
-        BlockState state = pkt.getState();
-        int blockStateId = Block.getRawIdFromState(state);
+        BlockState state = pkt.getBlockState();
+        int blockStateId = Block.getId(state);
 
         boolean accepted = worldMerger.acceptBlockUpdate(
                 dimensionFor(sourceIdx),
@@ -182,10 +182,10 @@ public final class WorldPacketRewriter {
     }
 
     /**
-     * Rewrites a {@code ChunkDeltaUpdateS2CPacket} (SECTION_BLOCKS_UPDATE).
+     * Rewrites a {@code ClientboundSectionBlocksUpdatePacket} (SECTION_BLOCKS_UPDATE).
      * Iterates all (pos, state) entries, LWW-tests each, re-encodes survivors.
      *
-     * <p>{@code ChunkDeltaUpdateS2CPacket.CODEC} takes a plain {@link PacketByteBuf}.
+     * <p>{@code ClientboundSectionBlocksUpdatePacket.STREAM_CODEC} takes a plain {@link FriendlyByteBuf}.
      * We use {@code visitUpdates(BiConsumer)} to iterate entries without needing
      * reflection or private field access.
      *
@@ -210,24 +210,24 @@ public final class WorldPacketRewriter {
         readVarIntFromBuf(raw);
         int bodyStart = raw.readerIndex();
 
-        // Decode via CODEC (PacketByteBuf wraps the body portion)
+        // Decode via CODEC (FriendlyByteBuf wraps the body portion)
         ByteBuf bodyBuf = raw.slice(bodyStart, raw.readableBytes());
-        PacketByteBuf pktBuf = new PacketByteBuf(bodyBuf);
-        ChunkDeltaUpdateS2CPacket pkt = ChunkDeltaUpdateS2CPacket.CODEC.decode(pktBuf);
+        FriendlyByteBuf pktBuf = new FriendlyByteBuf(bodyBuf);
+        ClientboundSectionBlocksUpdatePacket pkt = ClientboundSectionBlocksUpdatePacket.STREAM_CODEC.decode(pktBuf);
 
         // Collect survivors: (shortLocalPos, blockStateId)
         List<long[]> survivors = new ArrayList<>();
 
-        pkt.visitUpdates((blockPos, blockState) -> {
-            int bsId = Block.getRawIdFromState(blockState);
+        pkt.runUpdates((blockPos, blockState) -> {
+            int bsId = Block.getId(blockState);
             boolean accepted = worldMerger.acceptBlockUpdate(
                     dimensionFor(sourceIdx),
                     blockPos.getX(), blockPos.getY(), blockPos.getZ(),
                     tickAbs, bsId, sourceIdx);
             if (accepted) {
                 // Reconstruct the VarLong entry: stateId << 12 | shortLocalPos
-                ChunkSectionPos sectionPos = ChunkSectionPos.from(blockPos);
-                short localPos = ChunkSectionPos.packLocal(blockPos);
+                SectionPos sectionPos = SectionPos.of(blockPos);
+                short localPos = SectionPos.sectionRelativePos(blockPos);
                 long entry = ((long) bsId << 12) | (localPos & 0xFFFL);
                 survivors.add(new long[]{entry});
             }
