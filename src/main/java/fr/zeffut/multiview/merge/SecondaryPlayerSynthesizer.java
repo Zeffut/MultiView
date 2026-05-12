@@ -3,17 +3,17 @@ package fr.zeffut.multiview.merge;
 import fr.zeffut.multiview.format.VarInts;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import net.minecraft.entity.EntityType;
-import net.minecraft.entity.EntityPosition;
-import net.minecraft.network.PacketByteBuf;
-import net.minecraft.network.RegistryByteBuf;
-import net.minecraft.network.codec.PacketCodecs;
-import net.minecraft.network.packet.PlayPackets;
-import net.minecraft.network.packet.s2c.play.EntityPositionS2CPacket;
-import net.minecraft.network.packet.s2c.play.EntitySpawnS2CPacket;
-import net.minecraft.network.packet.s2c.play.PlayerListS2CPacket;
-import net.minecraft.registry.DynamicRegistryManager;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.PositionMoveRotation;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.ByteBufCodecs;
+import net.minecraft.network.protocol.game.GamePacketTypes;
+import net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
+import net.minecraft.core.RegistryAccess;
+import net.minecraft.world.phys.Vec3;
 
 import com.mojang.authlib.GameProfile;
 
@@ -30,10 +30,10 @@ import org.slf4j.LoggerFactory;
  * <ol>
  *   <li><b>PlayerInfoUpdate(ADD_PLAYER)</b> — registers the secondary's game profile
  *       in the client tab list so the client knows the skin/name when the entity spawns.</li>
- *   <li><b>EntitySpawnS2CPacket</b> — spawns a player entity at (0, 0, 0) with the
+ *   <li><b>ClientboundAddEntityPacket</b> — spawns a player entity at (0, 0, 0) with the
  *       secondary's UUID and a fresh global entity ID.  A subsequent TeleportEntity
  *       packet (synthesized from each PLAYER_POSITION EGO packet) will relocate it.</li>
- *   <li><b>EntityPositionS2CPacket</b> (TELEPORT_ENTITY) — re-positions the fake
+ *   <li><b>ClientboundEntityPositionSyncPacket</b> (TELEPORT_ENTITY) — re-positions the fake
  *       player entity whenever the secondary source's PLAYER_POSITION packet fires.</li>
  * </ol>
  *
@@ -64,9 +64,9 @@ public final class SecondaryPlayerSynthesizer {
         boolean fb;
         int piuId = -1, aeId = -1, teId = -1;
         try {
-            piuId = GamePacketDispatch.findId(PlayPackets.PLAYER_INFO_UPDATE);
-            aeId  = GamePacketDispatch.findId(PlayPackets.ADD_ENTITY);
-            teId  = GamePacketDispatch.findId(PlayPackets.TELEPORT_ENTITY);
+            piuId = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_PLAYER_INFO_UPDATE);
+            aeId  = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_ADD_ENTITY);
+            teId  = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_TELEPORT_ENTITY);
             fb = false;
         } catch (Throwable t) {
             LOG.warn("SecondaryPlayerSynthesizer: codec init failed ("
@@ -115,8 +115,8 @@ public final class SecondaryPlayerSynthesizer {
      *   UUID         : 2 × long  (16 bytes)
      *   x, y, z      : 3 × double (24 bytes)
      *   yaw, pitch, headYaw : 3 × float (12 bytes)
-     *   EntityType   : via EntityType.PACKET_CODEC (RegistryByteBuf codec)
-     *   GameProfile  : via PacketCodecs.GAME_PROFILE (ByteBuf codec)
+     *   EntityType   : via EntityType.STREAM_CODEC (RegistryFriendlyByteBuf codec)
+     *   GameProfile  : via ByteBufCodecs.GAME_PROFILE (ByteBuf codec)
      *   …remainder…
      * </pre>
      *
@@ -143,14 +143,14 @@ public final class SecondaryPlayerSynthesizer {
             // Skip yaw, pitch, headYaw (3 floats = 12 bytes)
             raw.skipBytes(12);
 
-            // Skip EntityType encoded via EntityType.PACKET_CODEC (RegistryByteBuf)
+            // Skip EntityType encoded via EntityType.STREAM_CODEC (RegistryFriendlyByteBuf)
             // EntityType is encoded as a VarInt registry ID
-            RegistryByteBuf regBuf = new RegistryByteBuf(raw, DynamicRegistryManager.EMPTY);
-            EntityType.PACKET_CODEC.decode(regBuf);
+            RegistryFriendlyByteBuf regBuf = new RegistryFriendlyByteBuf(raw, RegistryAccess.EMPTY);
+            EntityType.STREAM_CODEC.decode(regBuf);
 
-            // Now decode GameProfile via PacketCodecs.GAME_PROFILE
+            // Now decode GameProfile via ByteBufCodecs.GAME_PROFILE
             // GameProfile codec: readUUID + readString (VarInt-prefixed UTF-8) + properties
-            GameProfile profile = PacketCodecs.GAME_PROFILE.decode(raw);
+            GameProfile profile = ByteBufCodecs.GAME_PROFILE.decode(raw);
             if (profile != null && profile.name() != null && !profile.name().isEmpty()) {
                 return profile;
             }
@@ -173,14 +173,14 @@ public final class SecondaryPlayerSynthesizer {
      * secondary player in the client's tab list.
      *
      * <h3>Wire format (manual encoding)</h3>
-     * The public constructors of {@code PlayerListS2CPacket} only accept
+     * The public constructors of {@code ClientboundPlayerInfoUpdatePacket} only accept
      * {@code ServerPlayerEntity} objects, which are unavailable in the merge
      * pipeline.  We therefore encode the wire format directly:
      * <pre>
      *   byte  actions EnumSet   (1 byte: bit 0 = ADD_PLAYER set → 0x01)
      *   VarInt entry count      (1 → 0x01)
      *   UUID                    (2 longs = 16 bytes)
-     *   GameProfile             (via PacketCodecs.GAME_PROFILE)
+     *   GameProfile             (via ByteBufCodecs.GAME_PROFILE)
      * </pre>
      *
      * @param profile game profile (UUID + name); may be a stub placeholder
@@ -190,13 +190,13 @@ public final class SecondaryPlayerSynthesizer {
         if (fallbackMode) return null;
         try {
             ByteBuf body = Unpooled.buffer(64);
-            PacketByteBuf pbuf = new PacketByteBuf(body);
+            FriendlyByteBuf pbuf = new FriendlyByteBuf(body);
 
             // Actions EnumSet: ADD_PLAYER has ordinal 0 → bit 0 set → single byte 0x01
             // writeEnumSet writes the enum as a fixed-size BitSet based on enum class size.
-            // PlayerListS2CPacket.Action has 8 values → 1 byte.
-            pbuf.writeEnumSet(java.util.EnumSet.of(PlayerListS2CPacket.Action.ADD_PLAYER),
-                    PlayerListS2CPacket.Action.class);
+            // ClientboundPlayerInfoUpdatePacket.Action has 8 values → 1 byte.
+            pbuf.writeEnumSet(java.util.EnumSet.of(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER),
+                    ClientboundPlayerInfoUpdatePacket.Action.class);
 
             // 1 entry
             pbuf.writeVarInt(1);
@@ -205,8 +205,8 @@ public final class SecondaryPlayerSynthesizer {
             pbuf.writeLong(profile.id().getMostSignificantBits());
             pbuf.writeLong(profile.id().getLeastSignificantBits());
 
-            // ADD_PLAYER action data: GameProfile via PacketCodecs.GAME_PROFILE
-            PacketCodecs.GAME_PROFILE.encode(body, profile);
+            // ADD_PLAYER action data: GameProfile via ByteBufCodecs.GAME_PROFILE
+            ByteBufCodecs.GAME_PROFILE.encode(body, profile);
 
             return prependPacketId(idPlayerInfoUpdate, body);
         } catch (Throwable t) {
@@ -216,7 +216,7 @@ public final class SecondaryPlayerSynthesizer {
     }
 
     /**
-     * Synthesizes an {@code EntitySpawnS2CPacket} (ADD_ENTITY) that spawns a PLAYER
+     * Synthesizes an {@code ClientboundAddEntityPacket} (ADD_ENTITY) that spawns a PLAYER
      * entity for the secondary source at (0, 0, 0).
      *
      * <p>A fresh global entity ID is assigned via {@link IdRemapper#assign(int, int)}
@@ -233,20 +233,20 @@ public final class SecondaryPlayerSynthesizer {
             // Assign a fresh global ID using sentinel localId = -1
             int globalId = idRemapper.assign(sourceIdx, -1);
 
-            EntitySpawnS2CPacket packet = new EntitySpawnS2CPacket(
+            ClientboundAddEntityPacket packet = new ClientboundAddEntityPacket(
                     globalId,
                     uuid,
                     0.0, 0.0, 0.0,   // initial position — corrected by first TELEPORT_ENTITY
                     0f, 0f,           // yaw, pitch
                     EntityType.PLAYER,
                     0,                // entityData
-                    Vec3d.ZERO,       // velocity
+                    Vec3.ZERO,       // velocity
                     0.0               // headYaw
             );
 
             ByteBuf body = Unpooled.buffer(64);
-            RegistryByteBuf registryBuf = new RegistryByteBuf(body, DynamicRegistryManager.EMPTY);
-            EntitySpawnS2CPacket.CODEC.encode(registryBuf, packet);
+            RegistryFriendlyByteBuf registryBuf = new RegistryFriendlyByteBuf(body, RegistryAccess.EMPTY);
+            ClientboundAddEntityPacket.STREAM_CODEC.encode(registryBuf, packet);
 
             return prependPacketId(idAddEntity, body);
         } catch (Throwable t) {
@@ -268,7 +268,7 @@ public final class SecondaryPlayerSynthesizer {
     }
 
     /**
-     * Synthesizes an {@code EntityPositionS2CPacket} (TELEPORT_ENTITY) that moves
+     * Synthesizes an {@code ClientboundEntityPositionSyncPacket} (TELEPORT_ENTITY) that moves
      * the fake player entity to the given absolute position.
      *
      * @param entityId global entity ID of the fake player (from {@link #getFakeEntityId})
@@ -283,23 +283,22 @@ public final class SecondaryPlayerSynthesizer {
                                      float yaw, float pitch) {
         if (fallbackMode || entityId < 0) return null;
         try {
-            EntityPosition pos = new EntityPosition(
-                    new Vec3d(x, y, z),
-                    Vec3d.ZERO,   // deltaMovement
+            PositionMoveRotation pos = new PositionMoveRotation(
+                    new Vec3(x, y, z),
+                    Vec3.ZERO,   // deltaMovement
                     yaw,
                     pitch
             );
 
-            EntityPositionS2CPacket packet = EntityPositionS2CPacket.create(
+            ClientboundEntityPositionSyncPacket packet = new ClientboundEntityPositionSyncPacket(
                     entityId,
                     pos,
-                    Set.of(),      // no relative flags — absolute teleport
                     false          // onGround
             );
 
             ByteBuf body = Unpooled.buffer(32);
-            PacketByteBuf pbuf = new PacketByteBuf(body);
-            EntityPositionS2CPacket.CODEC.encode(pbuf, packet);
+            FriendlyByteBuf pbuf = new FriendlyByteBuf(body);
+            ClientboundEntityPositionSyncPacket.STREAM_CODEC.encode(pbuf, packet);
 
             return prependPacketId(idTeleportEntity, body);
         } catch (Throwable t) {

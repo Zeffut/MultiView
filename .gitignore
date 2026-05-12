@@ -37,3 +37,6 @@ local.properties
 
 # Flashback jar (licence restrictive — JAMAIS committer)
 libs/
+dist/
+*.bak
+.gradle.properties.*

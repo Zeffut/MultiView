@@ -11,11 +11,11 @@ import fr.zeffut.multiview.merge.MergeOrchestrator;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents;
 import net.fabricmc.fabric.api.client.screen.v1.Screens;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.network.chat.Component;
 
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -97,14 +97,14 @@ public final class MergeUi {
          */
         final Set<Path> checkedPaths = new LinkedHashSet<>();
 
-        ButtonWidget mergeButton = null;
+        Button mergeButton = null;
     }
 
     // -------------------------------------------------------------------------
     // ScreenEvents.AFTER_INIT handler
     // -------------------------------------------------------------------------
 
-    private static void onAfterInit(MinecraftClient client, Screen screen, int scaledWidth, int scaledHeight) {
+    private static void onAfterInit(Minecraft client, Screen screen, int scaledWidth, int scaledHeight) {
         if (!(screen instanceof SelectReplayScreen srs)) return;
 
         SelectionState state = new SelectionState();
@@ -117,10 +117,10 @@ public final class MergeUi {
         int mergeY = margin;
 
         // Merge button — initially disabled
-        ButtonWidget mergeBtn = ButtonWidget.builder(
-                        Text.translatable("multiview.button.merge_selected"),
+        Button mergeBtn = Button.builder(
+                        Component.translatable("multiview.button.merge_selected"),
                         btn -> startMerge(state, srs, client))
-                .dimensions(mergeX, mergeY, mergeW, btnH)
+                .bounds(mergeX, mergeY, mergeW, btnH)
                 .build();
         mergeBtn.active = false;
         state.mergeButton = mergeBtn;
@@ -144,7 +144,7 @@ public final class MergeUi {
     // -------------------------------------------------------------------------
 
     private static void drawCheckboxes(SelectionState state, SelectReplayScreen srs,
-                                        DrawContext context, int mouseX, int mouseY) {
+                                        GuiGraphics context, int mouseX, int mouseY) {
         ReplaySelectionList list = getSelectionList(srs);
         if (list == null) return;
 
@@ -180,7 +180,7 @@ public final class MergeUi {
      *   <li>Unchecked: dark fill with white border; lighter border on hover.</li>
      * </ul>
      */
-    private static void drawCheckbox(DrawContext context, int x, int y, boolean checked, boolean hovered) {
+    private static void drawCheckbox(GuiGraphics context, int x, int y, boolean checked, boolean hovered) {
         // Border
         int borderColor = hovered ? 0xFFFFFFFF : 0xFFAAAAAA;
         context.fill(x - 1, y - 1, x + CB_SIZE + 1, y + CB_SIZE + 1, borderColor);
@@ -253,9 +253,9 @@ public final class MergeUi {
         state.mergeButton.active = n >= 2;
         if (n >= 2) {
             state.mergeButton.setMessage(
-                    Text.translatable("multiview.button.merge_selected.count", n));
+                    Component.translatable("multiview.button.merge_selected.count", n));
         } else {
-            state.mergeButton.setMessage(Text.translatable("multiview.button.merge_selected"));
+            state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
         }
     }
 
@@ -264,7 +264,7 @@ public final class MergeUi {
     // -------------------------------------------------------------------------
 
     private static void startMerge(SelectionState state, SelectReplayScreen parentScreen,
-                                   MinecraftClient client) {
+                                   Minecraft client) {
         if (state.checkedPaths.size() < 2) return;
 
         List<Path> sourcePaths = new ArrayList<>(state.checkedPaths);
@@ -287,7 +287,7 @@ public final class MergeUi {
         state.checkedPaths.clear();
         if (state.mergeButton != null) {
             state.mergeButton.active = false;
-            state.mergeButton.setMessage(Text.translatable("multiview.button.merge_selected"));
+            state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
         }
 
         // Run merge in background

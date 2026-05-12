@@ -4,9 +4,9 @@ import fr.zeffut.multiview.format.VarInts;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 
-import net.minecraft.network.RegistryByteBuf;
-import net.minecraft.network.packet.s2c.play.PlayerListS2CPacket;
-import net.minecraft.registry.DynamicRegistryManager;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
+import net.minecraft.core.RegistryAccess;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +18,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Dedup-by-UUID for {@code PlayerListS2CPacket} (PLAYER_INFO_UPDATE / PLAYER_INFO_REMOVE).
+ * Dedup-by-UUID for {@code ClientboundPlayerInfoUpdatePacket} (PLAYER_INFO_UPDATE / PLAYER_INFO_REMOVE).
  *
  * <p>The default {@link GlobalDeduper} content-hash misses these packets because each source
  * records slightly different bytes for the same join event (the {@code UPDATE_LATENCY}
@@ -64,7 +64,7 @@ public final class PlayerInfoUpdateDeduper {
             // Touch the codec field to trigger class initialization. Throws if Bootstrap
             // is missing (e.g. unit tests without MC runtime) — fall back to heuristic
             // first-UUID dedup in that case.
-            Object _probe = PlayerListS2CPacket.CODEC;
+            Object _probe = ClientboundPlayerInfoUpdatePacket.STREAM_CODEC;
             ok = _probe != null;
         } catch (Throwable t) {
             ok = false;
@@ -81,23 +81,23 @@ public final class PlayerInfoUpdateDeduper {
     public boolean shouldEmitInfoUpdate(byte[] payload) {
         if (payload == null || payload.length < 4) return true;
 
-        // Preferred path: full decode via MC's PacketCodec — extracts every entry's UUID,
+        // Preferred path: full decode via MC's StreamCodec — extracts every entry's UUID,
         // letting us drop only when EVERY entry is already known. Re-orderings of the
         // same bulk across sources still get caught.
         if (codecAvailable) {
             try {
                 ByteBuf raw = Unpooled.wrappedBuffer(payload);
                 VarInts.readVarInt(raw); // skip packetId
-                RegistryByteBuf rbuf = new RegistryByteBuf(raw, DynamicRegistryManager.EMPTY);
-                PlayerListS2CPacket pkt = PlayerListS2CPacket.CODEC.decode(rbuf);
+                RegistryFriendlyByteBuf rbuf = new RegistryFriendlyByteBuf(raw, RegistryAccess.EMPTY);
+                ClientboundPlayerInfoUpdatePacket pkt = ClientboundPlayerInfoUpdatePacket.STREAM_CODEC.decode(rbuf);
 
-                if (!pkt.getActions().contains(PlayerListS2CPacket.Action.ADD_PLAYER)) {
+                if (!pkt.actions().contains(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER)) {
                     return true; // not an ADD packet — leave content-hash dedup to the caller
                 }
 
                 List<UUID> newUuids = new ArrayList<>();
                 boolean allKnown = true;
-                for (PlayerListS2CPacket.Entry entry : pkt.getEntries()) {
+                for (ClientboundPlayerInfoUpdatePacket.Entry entry : pkt.entries()) {
                     UUID u = entry.profileId();
                     if (u != null && !announcedUuids.contains(u)) {
                         allKnown = false;

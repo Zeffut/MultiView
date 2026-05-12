@@ -3,13 +3,13 @@ package fr.zeffut.multiview.merge;
 import fr.zeffut.multiview.format.VarInts;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import net.minecraft.network.RegistryByteBuf;
-import net.minecraft.network.packet.PlayPackets;
-import net.minecraft.network.packet.s2c.play.EntitySpawnS2CPacket;
-import net.minecraft.network.state.PlayStateFactories;
-import net.minecraft.registry.DynamicRegistryManager;
-import net.minecraft.registry.Registries;
-import net.minecraft.registry.Registry;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.protocol.game.GamePacketTypes;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.GameProtocols;
+import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.Registry;
 
 import java.util.List;
 import java.util.UUID;
@@ -21,8 +21,8 @@ import org.slf4j.LoggerFactory;
  *
  * <h2>Decode strategy per packet type</h2>
  * <ul>
- *   <li><b>ADD_ENTITY</b> (EntitySpawnS2CPacket): Use {@code EntitySpawnS2CPacket.CODEC}
- *       (requires RegistryByteBuf) to fully decode, extract entityId+UUID+type+pos,
+ *   <li><b>ADD_ENTITY</b> (ClientboundAddEntityPacket): Use {@code ClientboundAddEntityPacket.STREAM_CODEC}
+ *       (requires RegistryFriendlyByteBuf) to fully decode, extract entityId+UUID+type+pos,
  *       call {@link EntityMerger#registerAddEntity}, reconstruct with globalId, re-encode.</li>
  *   <li><b>REMOVE_ENTITIES</b>: Binary decode — VarInt packetId + VarInt count + N VarInt IDs.
  *       Remap each ID, re-encode.</li>
@@ -47,24 +47,24 @@ public final class EntityPacketRewriter {
     private static final Logger LOG = LoggerFactory.getLogger(EntityPacketRewriter.class);
 
     /**
-     * If true, PlayStateFactories was not available and entity rewriting is disabled.
+     * If true, GameProtocols was not available and entity rewriting is disabled.
      * All packets will pass through unchanged (same as Phase 3 behaviour).
      */
     private final boolean fallbackMode;
 
     /**
-     * DynamicRegistryManager used for decoding/encoding ADD_ENTITY payloads.
-     * Needed because {@code EntitySpawnS2CPacket.CODEC} looks up the
+     * RegistryAccess used for decoding/encoding ADD_ENTITY payloads.
+     * Needed because {@code ClientboundAddEntityPacket.STREAM_CODEC} looks up the
      * {@code minecraft:entity_type} registry at runtime via
-     * {@link RegistryByteBuf#getRegistryManager()}.
+     * {@link RegistryFriendlyByteBuf#getRegistryManager()}.
      *
-     * <p>Built from the static {@link Registries#ENTITY_TYPE} after
+     * <p>Built from the static {@link BuiltInRegistries#ENTITY_TYPE} after
      * {@code Bootstrap.initialize()} has populated it (always true in the
      * Minecraft Fabric client environment). If construction fails (e.g. in
      * unit tests that bypass Bootstrap), {@link #addEntityDecodeAvailable} is
      * set to {@code false} and ADD_ENTITY packets fall through as passthrough.
      */
-    private final DynamicRegistryManager registryManager;
+    private final RegistryAccess registryManager;
 
     /**
      * True iff {@link #registryManager} was successfully built AND contains a
@@ -114,62 +114,62 @@ public final class EntityPacketRewriter {
         this.localPlayerUuid = new UUID[sourceCount];
         java.util.Arrays.fill(this.localPlayerEntityId, -1);
 
-        // Resolve protocol IDs once. If PlayStateFactories is unavailable (e.g. no Bootstrap
+        // Resolve protocol IDs once. If GameProtocols is unavailable (e.g. no Bootstrap
         // in unit test context), fall back to passthrough mode (same as Phase 3).
         boolean fb;
         try {
-            idAddEntity         = GamePacketDispatch.findId(PlayPackets.ADD_ENTITY);
-            idRemoveEntities    = GamePacketDispatch.findId(PlayPackets.REMOVE_ENTITIES);
-            idMoveEntityPos     = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_POS);
-            idMoveEntityRot     = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_ROT);
-            idMoveEntityPosRot  = GamePacketDispatch.findId(PlayPackets.MOVE_ENTITY_POS_ROT);
-            idTeleportEntity    = GamePacketDispatch.findId(PlayPackets.TELEPORT_ENTITY);
-            idEntityPositionSync= GamePacketDispatch.findId(PlayPackets.ENTITY_POSITION_SYNC);
-            idSetEntityData     = GamePacketDispatch.findId(PlayPackets.SET_ENTITY_DATA);
-            idEntityEvent       = GamePacketDispatch.findId(PlayPackets.ENTITY_EVENT);
-            idSetEntityMotion   = GamePacketDispatch.findId(PlayPackets.SET_ENTITY_MOTION);
-            idAnimate           = GamePacketDispatch.findId(PlayPackets.ANIMATE);
-            idRotateHead        = GamePacketDispatch.findId(PlayPackets.ROTATE_HEAD);
-            idSetEquipment      = GamePacketDispatch.findId(PlayPackets.SET_EQUIPMENT);
-            idSetEntityLink     = GamePacketDispatch.findId(PlayPackets.SET_ENTITY_LINK);
-            idSetPassengers     = GamePacketDispatch.findId(PlayPackets.SET_PASSENGERS);
-            idUpdateAttributes  = GamePacketDispatch.findId(PlayPackets.UPDATE_ATTRIBUTES);
-            idUpdateMobEffect   = GamePacketDispatch.findId(PlayPackets.UPDATE_MOB_EFFECT);
-            idRemoveMobEffect   = GamePacketDispatch.findId(PlayPackets.REMOVE_MOB_EFFECT);
-            idDamageEvent       = GamePacketDispatch.findId(PlayPackets.DAMAGE_EVENT);
-            idTakeItemEntity    = GamePacketDispatch.findId(PlayPackets.TAKE_ITEM_ENTITY);
+            idAddEntity         = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_ADD_ENTITY);
+            idRemoveEntities    = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_REMOVE_ENTITIES);
+            idMoveEntityPos     = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_MOVE_ENTITY_POS);
+            idMoveEntityRot     = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_MOVE_ENTITY_ROT);
+            idMoveEntityPosRot  = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_MOVE_ENTITY_POS_ROT);
+            idTeleportEntity    = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_TELEPORT_ENTITY);
+            idEntityPositionSync= GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_ENTITY_POSITION_SYNC);
+            idSetEntityData     = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_SET_ENTITY_DATA);
+            idEntityEvent       = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_ENTITY_EVENT);
+            idSetEntityMotion   = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_SET_ENTITY_MOTION);
+            idAnimate           = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_ANIMATE);
+            idRotateHead        = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_ROTATE_HEAD);
+            idSetEquipment      = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_SET_EQUIPMENT);
+            idSetEntityLink     = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_SET_ENTITY_LINK);
+            idSetPassengers     = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_SET_PASSENGERS);
+            idUpdateAttributes  = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_UPDATE_ATTRIBUTES);
+            idUpdateMobEffect   = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_UPDATE_MOB_EFFECT);
+            idRemoveMobEffect   = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_REMOVE_MOB_EFFECT);
+            idDamageEvent       = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_DAMAGE_EVENT);
+            idTakeItemEntity    = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_TAKE_ITEM_ENTITY);
             fb = false;
         } catch (Throwable t) {
-            LOG.warn("EntityPacketRewriter: PlayStateFactories unavailable ("
+            LOG.warn("EntityPacketRewriter: GameProtocols unavailable ("
                     + t.getClass().getSimpleName() + "), entity rewriting disabled (fallback passthrough).");
             fb = true;
         }
         this.fallbackMode = fb;
 
-        // Resolve a DynamicRegistryManager containing minecraft:entity_type.
-        // This is required to decode ADD_ENTITY payloads via EntitySpawnS2CPacket.CODEC
-        // (see RegistryByteBuf.getRegistryManager() + PacketCodecs.registryValue).
+        // Resolve a RegistryAccess containing minecraft:entity_type.
+        // This is required to decode ADD_ENTITY payloads via ClientboundAddEntityPacket.STREAM_CODEC
+        // (see RegistryFriendlyByteBuf.getRegistryManager() + ByteBufCodecs.registryValue).
         //
         // Strategy: build an ImmutableImpl DRM directly from the static
-        // Registries.ENTITY_TYPE registry. After Bootstrap.initialize() runs
+        // BuiltInRegistries.ENTITY_TYPE registry. After Bootstrap.initialize() runs
         // (always true in the Fabric client), this registry is fully populated.
         // In unit tests that skip Bootstrap, the registry is empty — we detect
         // this via size() and fall back to passthrough on ADD_ENTITY only.
-        DynamicRegistryManager drm;
+        RegistryAccess drm;
         boolean decodeOk;
         try {
-            Registry<?> entityTypeRegistry = Registries.ENTITY_TYPE;
-            drm = new DynamicRegistryManager.ImmutableImpl(List.<Registry<?>>of(entityTypeRegistry));
+            Registry<?> entityTypeRegistry = BuiltInRegistries.ENTITY_TYPE;
+            drm = RegistryAccess.fromRegistryOfRegistries(BuiltInRegistries.REGISTRY);
             decodeOk = entityTypeRegistry.size() > 0;
             if (!decodeOk) {
-                LOG.debug("EntityPacketRewriter: Registries.ENTITY_TYPE is empty "
+                LOG.debug("EntityPacketRewriter: BuiltInRegistries.ENTITY_TYPE is empty "
                         + "(Bootstrap not initialized?); ADD_ENTITY decode disabled.");
             }
         } catch (Throwable t) {
-            LOG.warn("EntityPacketRewriter: failed to build DynamicRegistryManager ("
+            LOG.warn("EntityPacketRewriter: failed to build RegistryAccess ("
                     + t.getClass().getSimpleName() + ": " + t.getMessage()
                     + "); ADD_ENTITY decode disabled.");
-            drm = DynamicRegistryManager.EMPTY;
+            drm = RegistryAccess.EMPTY;
             decodeOk = false;
         }
         this.registryManager = drm;
@@ -202,7 +202,7 @@ public final class EntityPacketRewriter {
      * @return rewritten payload bytes
      */
     public byte[] rewrite(int sourceIdx, int tickAbs, byte[] payload) {
-        // If PlayStateFactories was not available, fall through to passthrough
+        // If GameProtocols was not available, fall through to passthrough
         if (fallbackMode) return payload;
 
         // Peek at the packet ID
@@ -213,7 +213,7 @@ public final class EntityPacketRewriter {
                 // ADD_ENTITY requires a populated minecraft:entity_type registry.
                 // If unavailable (unit test without Bootstrap), pass through unchanged:
                 // the entity stays with its source-local ID, but at least playback
-                // does not crash. In the real Fabric runtime Registries.ENTITY_TYPE
+                // does not crash. In the real Fabric runtime BuiltInRegistries.ENTITY_TYPE
                 // is always populated.
                 if (!addEntityDecodeAvailable) return payload;
                 return rewriteAddEntity(sourceIdx, tickAbs, payload);
@@ -299,11 +299,11 @@ public final class EntityPacketRewriter {
     // -------------------------------------------------------------------------
 
     /**
-     * Rewrites ADD_ENTITY (EntitySpawnS2CPacket) using the MC codec for full decode.
+     * Rewrites ADD_ENTITY (ClientboundAddEntityPacket) using the MC codec for full decode.
      *
-     * <p>Uses a {@link RegistryByteBuf} bound to {@link #registryManager}, which
+     * <p>Uses a {@link RegistryFriendlyByteBuf} bound to {@link #registryManager}, which
      * contains the populated {@code minecraft:entity_type} registry — required
-     * by {@code EntitySpawnS2CPacket.CODEC} via {@code PacketCodecs.registryValue}.
+     * by {@code ClientboundAddEntityPacket.STREAM_CODEC} via {@code ByteBufCodecs.registryValue}.
      *
      * <p>Must only be called when {@link #addEntityDecodeAvailable} is {@code true};
      * otherwise the registry lookup would throw
@@ -317,20 +317,20 @@ public final class EntityPacketRewriter {
         readVarIntFromBuf(raw); // skip packetId
         int bodyStart = raw.readerIndex();
 
-        // Decode body with EntitySpawnS2CPacket.CODEC
+        // Decode body with ClientboundAddEntityPacket.STREAM_CODEC
         ByteBuf bodyBuf = raw.slice(bodyStart, raw.readableBytes());
-        RegistryByteBuf registryBuf = new RegistryByteBuf(bodyBuf, registryManager);
+        RegistryFriendlyByteBuf registryBuf = new RegistryFriendlyByteBuf(bodyBuf, registryManager);
 
-        EntitySpawnS2CPacket spawn = EntitySpawnS2CPacket.CODEC.decode(registryBuf);
+        ClientboundAddEntityPacket spawn = ClientboundAddEntityPacket.STREAM_CODEC.decode(registryBuf);
 
-        int localId = spawn.getEntityId();
-        UUID uuid = spawn.getUuid();
+        int localId = spawn.getId();
+        UUID uuid = spawn.getUUID();
         double x = spawn.getX();
         double y = spawn.getY();
         double z = spawn.getZ();
 
         // Get entity type as string (e.g. "minecraft:zombie")
-        String typeStr = Registries.ENTITY_TYPE.getId(spawn.getEntityType()).toString();
+        String typeStr = BuiltInRegistries.ENTITY_TYPE.getKey(spawn.getType()).toString();
 
         // Check if this is the local player (UUID matches CreatePlayer UUID)
         if (uuid != null && uuid.equals(localPlayerUuid[sourceIdx])) {
@@ -343,11 +343,11 @@ public final class EntityPacketRewriter {
         int globalId = entityMerger.registerAddEntity(sourceIdx, localId, uuid, typeStr, tickAbs, x, y, z);
 
         // Reconstruct the packet with globalId
-        EntitySpawnS2CPacket remapped = new EntitySpawnS2CPacket(
+        ClientboundAddEntityPacket remapped = new ClientboundAddEntityPacket(
                 globalId, uuid, x, y, z,
-                spawn.getYaw(), spawn.getPitch(),
-                spawn.getEntityType(), spawn.getEntityData(),
-                spawn.getVelocity(), spawn.getHeadYaw()
+                spawn.getYRot(), spawn.getXRot(),
+                spawn.getType(), spawn.getData(),
+                spawn.getMovement(), spawn.getYHeadRot()
         );
 
         // Re-encode: packetId bytes (original) + new body
@@ -356,8 +356,8 @@ public final class EntityPacketRewriter {
         out.writeBytes(payload, packetIdStart, bodyStart - packetIdStart);
         // Encode remapped packet body
         ByteBuf newBodyBuf = Unpooled.buffer(payload.length);
-        RegistryByteBuf outRegistryBuf = new RegistryByteBuf(newBodyBuf, registryManager);
-        EntitySpawnS2CPacket.CODEC.encode(outRegistryBuf, remapped);
+        RegistryFriendlyByteBuf outRegistryBuf = new RegistryFriendlyByteBuf(newBodyBuf, registryManager);
+        ClientboundAddEntityPacket.STREAM_CODEC.encode(outRegistryBuf, remapped);
         out.writeBytes(newBodyBuf);
 
         byte[] result = new byte[out.readableBytes()];

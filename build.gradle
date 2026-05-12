@@ -10,17 +10,24 @@ base {
     archivesName = project.archives_base_name
 }
 
+// noIntermediateMappings is only valid on MC versions where Fabric API ships in mojmap-named
+// (e.g. MC 26.1+ where Yarn/Intermediary haven't been published).
+if (project.findProperty("no_intermediate") == "true") {
+    loom { noIntermediateMappings() }
+}
+
 repositories {
-    // Flashback Maven — à confirmer/ajuster en Task 9
-    // maven { url = 'https://maven.moulberry.com/' }
 }
 
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    // MC 26.1+ ships in mojmap directly (unobfuscated). For older MC versions, we need to
+    // remap from obfuscated → mojmap via the official mappings layer.
+    if (project.findProperty("no_intermediate") != "true") {
+        mappings loom.officialMojangMappings()
+    }
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-    modImplementation "net.fabricmc.fabric-api:fabric-command-api-v2:${project.fabric_version}"
 
     // Flashback : no public Maven, consumed from a local jar in libs/
     // (not committed — see .gitignore). Download from https://modrinth.com/mod/flashback
@@ -52,14 +59,17 @@ processResources {
     }
 }
 
+def javaVersion = (project.findProperty('java_version') ?: '21') as int
+
 tasks.withType(JavaCompile).configureEach {
-    it.options.release = 21
+    it.options.release = javaVersion
 }
 
 java {
     withSourcesJar()
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    toolchain.languageVersion.set(JavaLanguageVersion.of(javaVersion))
+    sourceCompatibility = JavaVersion.toVersion(javaVersion)
+    targetCompatibility = JavaVersion.toVersion(javaVersion)
 }
 
 test {
