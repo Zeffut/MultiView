@@ -25,6 +25,22 @@ dependencies {
     // remap from obfuscated → mojmap via the official mappings layer.
     if (project.findProperty("no_intermediate") != "true") {
         mappings loom.officialMojangMappings()
+    } else {
+        // Loom still wants *something* in the mappings configuration even when
+        // noIntermediateMappings() is set. Synthesize an empty tiny-mappings jar so
+        // configure() doesn't bail out with "Configuration 'mappings' has no dependencies".
+        def stubMappingsJar = file("${buildDir}/stub-mappings.jar")
+        if (!stubMappingsJar.exists()) {
+            stubMappingsJar.parentFile.mkdirs()
+            def tinyContent = "tiny\t2\t0\tofficial\tnamed\n"
+            new java.util.jar.JarOutputStream(stubMappingsJar.newOutputStream()).withCloseable { jos ->
+                def entry = new java.util.jar.JarEntry("mappings/mappings.tiny")
+                jos.putNextEntry(entry)
+                jos.write(tinyContent.bytes)
+                jos.closeEntry()
+            }
+        }
+        mappings files(stubMappingsJar)
     }
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
@@ -63,6 +79,17 @@ def javaVersion = (project.findProperty('java_version') ?: '21') as int
 
 tasks.withType(JavaCompile).configureEach {
     it.options.release = javaVersion
+}
+
+// MC 26.1+ ships an incompatible client GUI API (GuiGraphics renamed,
+// ScreenEvents.afterRender signature changed, Screens.getButtons removed).
+// The fr/zeffut/multiview/ui package targets 1.21.x and can't compile against
+// 26.1. MultiViewMod loads MergeUi via reflection, so we can simply omit
+// the ui sources from compilation when building for 26.1+.
+if (project.findProperty("no_intermediate") == "true") {
+    sourceSets.main.java {
+        exclude 'fr/zeffut/multiview/ui/**'
+    }
 }
 
 java {
