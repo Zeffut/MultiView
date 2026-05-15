@@ -130,9 +130,20 @@ public final class TimelineAligner {
         int[] tickOffsets = new int[n];
         long max = 0;
         for (int i = 0; i < n; i++) {
-            tickOffsets[i] = (int) (absoluteOffsets[i] - min);
-            long end = tickOffsets[i] + sources.get(i).totalTicks();
+            long off = absoluteOffsets[i] - min;
+            if (off < 0 || off > Integer.MAX_VALUE) {
+                throw new IllegalStateException(
+                        "Per-source tick offset out of int range for source "
+                                + sources.get(i).label() + ": " + off);
+            }
+            tickOffsets[i] = (int) off;
+            long end = (long) tickOffsets[i] + sources.get(i).totalTicks();
             if (end > max) max = end;
+        }
+        if (max > Integer.MAX_VALUE) {
+            throw new IllegalStateException(
+                    "Merged timeline length exceeds Integer.MAX_VALUE ticks (" + max
+                            + ") — replays too long to merge as a single int-ticked timeline.");
         }
         return new AlignmentResult(tickOffsets, 0, (int) max, strategy);
     }

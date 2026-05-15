@@ -20,15 +20,24 @@ public final class MultiViewMod implements ClientModInitializer {
             MergeCommand.register(dispatcher);
         });
         // Phase 5: register merge UI buttons in Flashback's SelectReplayScreen.
-        // Wrapped in try/catch so the mod still loads on MC versions where the
-        // GUI rendering API has changed (e.g. MC 26.1+ renamed GuiGraphics) —
-        // users can still invoke /multiview merge via chat commands.
+        // Probe the rendering API up-front: if GuiGraphics is missing (renamed in
+        // MC 26.1+), skip UI registration entirely. Otherwise the AFTER_INIT
+        // listener would crash later when it tries to draw checkboxes.
+        boolean uiAvailable = false;
         try {
-            MergeUi.register();
+            Class.forName("net.minecraft.client.gui.GuiGraphics");
+            uiAvailable = true;
         } catch (Throwable t) {
             LOGGER.warn("MultiView UI disabled on this MC version "
-                    + "(incompatible rendering API: " + t.getClass().getSimpleName()
-                    + "). Use /multiview merge via chat instead.");
+                    + "(GuiGraphics not found). Use /mv merge via chat instead.");
+        }
+        if (uiAvailable) {
+            try {
+                MergeUi.register();
+            } catch (Throwable t) {
+                LOGGER.warn("MultiView UI registration failed ({}). "
+                        + "Use /mv merge via chat instead.", t.getClass().getSimpleName());
+            }
         }
     }
 }

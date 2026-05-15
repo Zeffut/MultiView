@@ -265,8 +265,11 @@ public final class MergeUi {
 
     private static void startMerge(SelectionState state, SelectReplayScreen parentScreen,
                                    Minecraft client) {
+        // Guard against rapid double-clicks: same tick can fire the click handler twice
+        // before the button is disabled below. Snapshot + clear atomically on the main
+        // thread; if checkedPaths is empty we already started.
         if (state.checkedPaths.size() < 2) return;
-
+        // Snapshot first so the cleared state can't affect the merge in-flight.
         List<Path> sourcePaths = new ArrayList<>(state.checkedPaths);
 
         // Output name: "merged_" + short timestamp. Keeps the filename concise
@@ -290,16 +293,23 @@ public final class MergeUi {
             state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
         }
 
-        // Run merge in background
+        // Run merge in background. All UI callbacks are guarded so they're no-ops
+        // when the user has navigated away from the progress screen (ESC, close, etc.).
         EXECUTOR.submit(() -> {
             try {
                 MergeOrchestrator.run(options, phase ->
-                        client.execute(() -> progressScreen.setPhase(phase)));
-                client.execute(progressScreen::onMergeSuccess);
+                        client.execute(() -> {
+                            if (client.screen == progressScreen) progressScreen.setPhase(phase);
+                        }));
+                client.execute(() -> {
+                    if (client.screen == progressScreen) progressScreen.onMergeSuccess();
+                });
             } catch (Throwable t) {
                 MultiViewMod.LOGGER.error("[MultiView] Merge failed", t);
                 String msg = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
-                client.execute(() -> progressScreen.onMergeError(msg));
+                client.execute(() -> {
+                    if (client.screen == progressScreen) progressScreen.onMergeError(msg);
+                });
             }
         });
     }
@@ -317,8 +327,17 @@ public final class MergeUi {
             java.lang.reflect.Field f = SelectReplayScreen.class.getDeclaredField("list");
             f.setAccessible(true);
             return (ReplaySelectionList) f.get(screen);
+        } catch (NoSuchFieldException nsf) {
+            // Flashback renamed/removed the field — the UI is silently broken from
+            // here on, so emit a WARN so users can report it instead of wondering
+            // why merge checkboxes vanished.
+            MultiViewMod.LOGGER.warn("[MultiView] SelectReplayScreen.list field not found ({}). "
+                    + "Flashback may have changed its internal layout — UI disabled.",
+                    nsf.getMessage());
+            return null;
         } catch (Exception e) {
-            MultiViewMod.LOGGER.debug("[MultiView] Could not access ReplaySelectionList field: {}", e.getMessage());
+            MultiViewMod.LOGGER.warn("[MultiView] Could not access ReplaySelectionList field: {}",
+                    e.getMessage());
             return null;
         }
     }
@@ -332,8 +351,12 @@ public final class MergeUi {
             java.lang.reflect.Field f = ReplaySelectionEntry.ReplayListEntry.class.getDeclaredField("summary");
             f.setAccessible(true);
             return (ReplaySummary) f.get(entry);
+        } catch (NoSuchFieldException nsf) {
+            MultiViewMod.LOGGER.warn("[MultiView] ReplayListEntry.summary field not found ({}). "
+                    + "Flashback may have changed its internal layout.", nsf.getMessage());
+            return null;
         } catch (Exception e) {
-            MultiViewMod.LOGGER.debug("[MultiView] Could not read summary field: {}", e.getMessage());
+            MultiViewMod.LOGGER.warn("[MultiView] Could not read summary field: {}", e.getMessage());
             return null;
         }
     }

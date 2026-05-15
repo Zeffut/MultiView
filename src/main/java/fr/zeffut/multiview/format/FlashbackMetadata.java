@@ -50,7 +50,11 @@ public final class FlashbackMetadata {
     public Map<Integer, Marker> markers() {
         Map<Integer, Marker> out = new LinkedHashMap<>();
         for (Map.Entry<String, Marker> e : rawMarkers.entrySet()) {
-            out.put(Integer.parseInt(e.getKey()), e.getValue());
+            try {
+                out.put(Integer.parseInt(e.getKey()), e.getValue());
+            } catch (NumberFormatException nfe) {
+                // Skip malformed marker keys rather than crashing the whole merge.
+            }
         }
         return Collections.unmodifiableMap(out);
     }

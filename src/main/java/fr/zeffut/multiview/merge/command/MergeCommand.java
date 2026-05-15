@@ -76,9 +76,44 @@ public final class MergeCommand {
     private static int execute(FabricClientCommandSource source,
                                List<String> sourceNames, String outputName) {
         Path replayRoot = com.moulberry.flashback.Flashback.getReplayFolder();
+        Path replayRootReal;
+        try {
+            replayRootReal = replayRoot.toRealPath();
+        } catch (java.io.IOException e) {
+            source.sendError(Component.literal("[MultiView] Cannot resolve replay folder: " + e.getMessage()));
+            return 0;
+        }
         List<Path> sources = new ArrayList<>();
-        for (String name : sourceNames) sources.add(replayRoot.resolve(name));
-        Path dest = replayRoot.resolve(outputName);
+        for (String name : sourceNames) {
+            Path resolved = replayRoot.resolve(name);
+            try {
+                Path real = resolved.toRealPath();
+                if (!real.startsWith(replayRootReal)) {
+                    source.sendError(Component.literal(
+                            "[MultiView] Refused: source path escapes the replay folder: " + name));
+                    return 0;
+                }
+                resolved = real;
+            } catch (java.io.IOException e) {
+                source.sendError(Component.literal("[MultiView] Source not found: " + name));
+                return 0;
+            }
+            sources.add(resolved);
+        }
+        // Destination must stay inside the replay folder; it may not exist yet, so
+        // validate the parent's real path instead of the destination itself.
+        Path dest = replayRoot.resolve(outputName).normalize();
+        try {
+            Path destParentReal = dest.getParent().toRealPath();
+            if (!destParentReal.startsWith(replayRootReal)) {
+                source.sendError(Component.literal(
+                        "[MultiView] Refused: destination escapes the replay folder: " + outputName));
+                return 0;
+            }
+        } catch (java.io.IOException e) {
+            source.sendError(Component.literal("[MultiView] Invalid destination: " + e.getMessage()));
+            return 0;
+        }
 
         MergeOptions options = new MergeOptions(sources, dest, Map.of(), false);
 

@@ -9,7 +9,6 @@ import fr.zeffut.multiview.format.Action;
 import fr.zeffut.multiview.format.FlashbackReader;
 import fr.zeffut.multiview.format.FlashbackReplay;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
-import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
 import java.io.IOException;
@@ -32,8 +31,18 @@ public final class InspectCommand {
     }
 
     private static int inspect(FabricClientCommandSource src, String replayName) {
-        Path replayFolder = Minecraft.getInstance().gameDirectory.toPath()
-                .resolve("replay").resolve(replayName);
+        Path replayRoot = com.moulberry.flashback.Flashback.getReplayFolder();
+        Path replayFolder = replayRoot.resolve(replayName);
+        try {
+            Path real = replayFolder.toRealPath();
+            if (!real.startsWith(replayRoot.toRealPath())) {
+                src.sendError(Component.literal("Refused: replay path escapes the Flashback replays folder."));
+                return 0;
+            }
+        } catch (IOException e) {
+            src.sendError(Component.literal("Replay not found: " + replayName));
+            return 0;
+        }
         try {
             FlashbackReplay replay = FlashbackReader.open(replayFolder);
             src.sendFeedback(Component.literal("UUID: " + replay.metadata().uuid()));

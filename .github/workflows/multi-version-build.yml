@@ -46,8 +46,9 @@ jobs:
 
       - name: Build for MC ${{ matrix.mc }}
         run: |
+          set -e
           chmod +x scripts/build-version.sh
-          ./scripts/build-version.sh ${{ matrix.mc }}
+          ./scripts/build-version.sh ${{ matrix.mc }} || { echo "Build failed for MC ${{ matrix.mc }}"; exit 1; }
 
       - name: Upload jar artifact
         uses: actions/upload-artifact@v4

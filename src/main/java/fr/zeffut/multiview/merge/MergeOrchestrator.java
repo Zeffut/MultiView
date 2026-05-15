@@ -138,7 +138,13 @@ public final class MergeOrchestrator {
                     }
                     sourceToOpen = tempDir;
                 }
-                replays.add(FlashbackReader.open(sourceToOpen));
+                FlashbackReplay opened = FlashbackReader.open(sourceToOpen);
+                if (opened.metadata().totalTicks() <= 0) {
+                    throw new IOException("Source has invalid totalTicks ("
+                            + opened.metadata().totalTicks() + "): " + src
+                            + " — refusing to merge an empty/corrupt replay.");
+                }
+                replays.add(opened);
             }
 
             // 2. Find anchors + align
@@ -301,6 +307,14 @@ public final class MergeOrchestrator {
             progress.accept("Packaging zip...");
             zipDirectory(destTmp, destPart);
 
+            // Re-check just before the move to close the TOCTOU window between the
+            // initial existence check (line ~89) and here: if another process created
+            // destZip in the meantime and --force is not set, refuse rather than
+            // silently overwrite via REPLACE_EXISTING.
+            if (Files.exists(destZip) && !options.force()) {
+                throw new IOException("Destination appeared during merge: " + destZip
+                        + ". Refusing to overwrite without --force.");
+            }
             // Atomic rename. If destZip exists, replace it (--force already validated above).
             try {
                 Files.move(destPart, destZip,
@@ -537,12 +551,47 @@ public final class MergeOrchestrator {
      */
     private static final int CHAT_DEDUP_WINDOW = 200;
 
-    /** CRC32C content hash for dedup comparisons. */
+    /** CRC32C content hash for dedup comparisons (used only where collisions are tolerable). */
     private static long contentHash(byte[] payload) {
         java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
         crc.update(payload, 0, payload.length);
         return crc.getValue();
     }
+
+    /**
+     * 128-bit chunk content hash for dedup. CRC32C (32 bits) has a birthday-paradox collision
+     * probability around 1 in 256k chunks — long replays can easily exceed that. We use a
+     * 128-bit prefix of SHA-256 instead: collision probability over 1M chunks ≈ 10⁻²⁰.
+     * MessageDigest is held in a ThreadLocal: instantiation is non-trivial and we hash
+     * once per chunk packet (potentially hundreds of thousands per merge).
+     */
+    private static final ThreadLocal<java.security.MessageDigest> SHA256_TL =
+            ThreadLocal.withInitial(() -> {
+                try {
+                    return java.security.MessageDigest.getInstance("SHA-256");
+                } catch (java.security.NoSuchAlgorithmException e) {
+                    throw new IllegalStateException("SHA-256 unavailable", e);
+                }
+            });
+
+    private static ChunkHashKey chunkContentHash(byte[] payload) {
+        java.security.MessageDigest md = SHA256_TL.get();
+        md.reset();
+        byte[] d = md.digest(payload);
+        {
+            long hi = ((long) (d[0] & 0xFF) << 56) | ((long) (d[1] & 0xFF) << 48)
+                    | ((long) (d[2] & 0xFF) << 40) | ((long) (d[3] & 0xFF) << 32)
+                    | ((long) (d[4] & 0xFF) << 24) | ((long) (d[5] & 0xFF) << 16)
+                    | ((long) (d[6] & 0xFF) << 8)  | ((long) (d[7] & 0xFF));
+            long lo = ((long) (d[8]  & 0xFF) << 56) | ((long) (d[9]  & 0xFF) << 48)
+                    | ((long) (d[10] & 0xFF) << 40) | ((long) (d[11] & 0xFF) << 32)
+                    | ((long) (d[12] & 0xFF) << 24) | ((long) (d[13] & 0xFF) << 16)
+                    | ((long) (d[14] & 0xFF) << 8)  | ((long) (d[15] & 0xFF));
+            return new ChunkHashKey(hi, lo);
+        }
+    }
+
+    private record ChunkHashKey(long hi, long lo) {}
 
     /**
      * Performs the streaming k-way merge and writes cN.flashback segment files to destTmp.
@@ -583,7 +632,11 @@ public final class MergeOrchestrator {
         // c0 gets the full primary snapshot; subsequent segments get an empty snapshot
         // (sequential playback from c0 snapshot is sufficient; random-seek to mid-segment
         // is a known limitation).
-        SegmentWriter currentWriter = new SegmentWriter("c0.flashback", mainRegistry);
+        // Held via a single-element array so the outer-most try/finally below can close it
+        // even if reassigned later in the streaming loop.
+        SegmentWriter[] writerHolder = { new SegmentWriter("c0.flashback", mainRegistry) };
+        SegmentWriter currentWriter = writerHolder[0];
+        try {
 
         // Copy snapshot section of primary source's first segment into our snapshot.
         // Flashback requires init packets (dimension setup, registries, local player,
@@ -693,7 +746,7 @@ public final class MergeOrchestrator {
         }
         // Track which chunks have already been emitted, keyed by content hash.
         // Prevents multiple POVs from overwriting the same chunk state on playback.
-        java.util.Set<Long> emittedChunkHashes = new java.util.HashSet<>();
+        java.util.Set<ChunkHashKey> emittedChunkHashes = new java.util.HashSet<>();
 
 
         // 2. One cursor per source, priority-queue ordered by (tickAbs, sourceIdx)
@@ -726,7 +779,15 @@ public final class MergeOrchestrator {
             // Visible-text dedup: each unique chat string emitted at most once. Catches the
             // "same chat, different bytes" pattern (Component components with dynamic fields like
             // signatures / timestamps that defeat byte-level dedup).
-            java.util.HashSet<String> chatRecentChatText = new java.util.HashSet<>();
+            // Bounded LRU (FIFO eviction) so long sessions cannot exhaust the heap.
+            final int chatDedupMax = 10_000;
+            java.util.Set<String> chatRecentChatText = java.util.Collections.newSetFromMap(
+                    new java.util.LinkedHashMap<String, Boolean>(chatDedupMax + 1, 0.75f, false) {
+                        @Override
+                        protected boolean removeEldestEntry(java.util.Map.Entry<String, Boolean> eldest) {
+                            return size() > chatDedupMax;
+                        }
+                    });
             int lastPurge = 0;
             boolean warnedOutOfOrder = false;
 
@@ -788,6 +849,7 @@ public final class MergeOrchestrator {
                     currentSegmentStart = tickAbsEmitted;
                     String nextSegName = "c" + currentSegmentIdx + ".flashback";
                     currentWriter = new SegmentWriter(nextSegName, mainRegistry);
+                    writerHolder[0] = currentWriter;
                     copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
                             currentWriter, currentSegmentStart, mainRegistry, ctx.report,
                             snapshotPiuId);
@@ -813,6 +875,7 @@ public final class MergeOrchestrator {
                         currentSegmentStart = tickAbsEmitted;
                         String nextSegName = "c" + currentSegmentIdx + ".flashback";
                         currentWriter = new SegmentWriter(nextSegName, mainRegistry);
+                        writerHolder[0] = currentWriter;
                         copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
                                 currentWriter, currentSegmentStart, mainRegistry, ctx.report);
                         currentWriter.endSnapshot();
@@ -927,7 +990,7 @@ public final class MergeOrchestrator {
                                 // drop secondary unload
                             } else if (idLevelChunkWithLight >= 0
                                     && pid == idLevelChunkWithLight) {
-                                long hash = contentHash(gp.bytes());
+                                ChunkHashKey hash = chunkContentHash(gp.bytes());
                                 if (emittedChunkHashes.add(hash)) {
                                     writeActionToMain(currentWriter, mainRegistry,
                                             cur.head().action(), ctx.report);
@@ -1166,6 +1229,14 @@ public final class MergeOrchestrator {
                     s.close();
                 } catch (Exception ignore) {
                 }
+            }
+        }
+        } finally {
+            // Outermost safety net: close the active SegmentWriter even if an exception
+            // is thrown during the snapshot-copy phase (before the inner try/finally).
+            SegmentWriter w = writerHolder[0];
+            if (w != null) {
+                try { w.close(); } catch (Exception ignore) {}
             }
         }
 

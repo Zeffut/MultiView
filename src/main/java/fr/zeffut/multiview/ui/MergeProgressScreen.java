@@ -50,7 +50,11 @@ public class MergeProgressScreen extends Screen {
 
         Button backBtn = Button.builder(
                         Component.translatable("gui.back"),
-                        btn -> this.minecraft.setScreen(this.previousScreen))
+                        btn -> {
+                            if (this.minecraft != null) {
+                                this.minecraft.setScreen(this.previousScreen);
+                            }
+                        })
                 .bounds(btnX, btnY, btnW, 20)
                 .build();
         backBtn.active = false;

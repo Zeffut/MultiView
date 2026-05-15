@@ -76,8 +76,11 @@ with open(gp_path, "w") as f:
         f.write(f"{k}={v}\n")
 PY
 
-    # Build
-    (cd "$ROOT" && ./gradlew clean build)
+    # Build — propagate failure explicitly even though set -e is active.
+    if ! (cd "$ROOT" && ./gradlew clean build); then
+        echo "ERROR: gradlew build failed for MC ${version}" >&2
+        exit 1
+    fi
 
     # Rename produced jar with version suffix
     local modver
