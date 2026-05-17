@@ -81,14 +81,19 @@ tasks.withType(JavaCompile).configureEach {
     it.options.release = javaVersion
 }
 
-// MC 26.1+ ships an incompatible client GUI API (GuiGraphics renamed,
-// ScreenEvents.afterRender signature changed, Screens.getButtons removed).
-// The fr/zeffut/multiview/ui package targets 1.21.x and can't compile against
-// 26.1. MultiViewMod loads MergeUi via reflection, so we can simply omit
-// the ui sources from compilation when building for 26.1+.
-if (project.findProperty("no_intermediate") == "true") {
-    sourceSets.main.java {
-        exclude 'fr/zeffut/multiview/ui/**'
+// The MC GUI rendering API changed in 26.1 (GuiGraphics → GuiGraphicsExtractor,
+// Screen.render → Screen.extractRenderState, drawCenteredString removed, etc.),
+// so we maintain two parallel implementations of the fr/zeffut/multiview/ui
+// package and pick the right one at configure time:
+//   - src/main/java-classic : MC 1.21.x (GuiGraphics, Screen.render, …)
+//   - src/main/java-modern  : MC 26.1+ (GuiGraphicsExtractor, extractRenderState, …)
+// MultiViewMod still loads MergeUi via reflection, so the rest of the codebase
+// is completely UI-agnostic.
+sourceSets.main.java {
+    if (project.findProperty("no_intermediate") == "true") {
+        srcDir 'src/main/java-modern'
+    } else {
+        srcDir 'src/main/java-classic'
     }
 }
 
