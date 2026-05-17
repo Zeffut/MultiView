@@ -7,10 +7,6 @@
 
 **MultiView** is a Fabric add-on for [Flashback](https://modrinth.com/mod/flashback). It takes **multiple `.flashback` replays recorded by different players from the same Minecraft session** and merges them into **one unified replay** — an "omniscient observer" view containing the union of every chunk, entity and event seen from any POV.
 
-> *Demo coming soon — drop a GIF/video here once recorded.*
-
----
-
 ## What it does
 
 Each player records their own POV using Flashback. MultiView aligns the recordings tick-by-tick and merges them into a single replay that behaves as if a single observer with unlimited render distance had recorded everything.
