@@ -1,86 +1,119 @@
 # MultiView
 
-Addon Fabric pour [Flashback](https://modrinth.com/mod/flashback) qui fusionne plusieurs replays `.flashback` enregistrés par différents joueurs d'une même session Minecraft en **un seul replay unifié** — "observateur omniscient" qui contient l'union des chunks, entités et événements observés par au moins un des POV.
+[![Modrinth Downloads](https://img.shields.io/modrinth/dt/multiview?label=downloads&logo=modrinth)](https://modrinth.com/mod/multiview)
+[![Modrinth Version](https://img.shields.io/modrinth/v/multiview?logo=modrinth&label=version)](https://modrinth.com/mod/multiview/versions)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Minecraft](https://img.shields.io/badge/minecraft-1.21.9%20%7C%201.21.10%20%7C%201.21.11%20%7C%2026.1%2B-green)](#compatibility)
 
-Version **0.3.0** — dedup massif cross-source (PlayerInfoUpdate, SystemChat par contenu, MoveEntity), multi-world dim per source, outil de test autonome `TestHarness`. Voir `CHANGELOG.md`.
+**MultiView** is a Fabric add-on for [Flashback](https://modrinth.com/mod/flashback). It takes **multiple `.flashback` replays recorded by different players from the same Minecraft session** and merges them into **one unified replay** — an "omniscient observer" view containing the union of every chunk, entity and event seen from any POV.
 
-## Public cible
+> *Demo coming soon — drop a GIF/video here once recorded.*
 
-- **Créateurs de contenu** : events PvP, SMP multi-joueurs, tournois, machinimas.
-- **Staffs de serveurs** : review anti-cheat multi-angles.
-- **Cinematographers** : caméra libre dans une scène multi-joueurs sans perte d'info.
+---
 
-## Utilisation
+## What it does
 
-1. Chaque joueur de la session enregistre son POV avec Flashback pendant la même période.
-2. Récupère tous les `.zip` produits et place-les dans ton propre `<gameDir>/flashback/replays/`.
-3. Ouvre Minecraft avec **Flashback + MultiView** installés.
-4. Clique sur l'icône caméra (menu titre) → **Select Replay**.
-5. Coche (case à droite de chaque ligne) les replays que tu veux fusionner — minimum 2.
-6. Clique **Merge N Replays** (en haut à droite).
-7. Attend la fin (écran de progression avec barre + texte).
-8. Le replay fusionné `merged_<timestamp>.zip` apparaît automatiquement dans la liste.
-9. Ouvre-le comme un replay normal → caméra libre pour explorer, Spectate Player pour suivre un enregistreur particulier.
+Each player records their own POV using Flashback. MultiView aligns the recordings tick-by-tick and merges them into a single replay that behaves as if a single observer with unlimited render distance had recorded everything.
 
-## Ce qui marche (0.1.0)
+- **All explored chunks** from every POV are present in the merged replay.
+- **All recording players** are visible at the same time.
+- **All entities and events** seen by at least one POV are kept.
+- **Free Camera** to roam, **Spectate Player** to follow a specific recorder.
 
-- Fusion de **N replays** (validation visuelle à 2 POV propre, 4 POV avec quelques imperfections).
-- **Alignement temporel automatique** au tick près via `ClientboundSetTimePacket` (avec fallback sur `metadata.name`).
-- **Chunks de toutes les zones** présents dans le replay fusionné (primary + secondaires concaténés).
-- **Markers de tous les POV** agrégés sur la timeline du replay fusionné (ex. "Changed Dimension").
-- **Player list complète** dans Spectate (dedup des adds / removes entre sources).
-- **UI intégrée** dans le Select Replay screen de Flashback — pas de commande à taper.
-- **Rollback atomique** si le merge échoue (pas de fichier partiel).
-- **i18n** : français + anglais.
+## Use cases
 
-## Limitations connues
+- **Content creators** — SMP recaps, PvP tournaments, machinima with multi-angle coverage.
+- **Server staff** — multi-angle review of incidents and anti-cheat investigations.
+- **Cinematographers** — free camera through a multiplayer scene with no info loss.
 
-- **POV secondaires visibles seulement quand le primary les regarde** : Flashback ne supporte qu'un seul local player. Le POV qui commence en premier devient le "primary" (caméra), les autres sont visibles comme entités joueur classiques.
-- **Fusion à 4+ POV** : certains chunks peuvent apparaître en patchwork quand plusieurs POV voient la même zone avec des versions conflictuelles.
-- **Pas encore de LWW sur blocs** ni de dedup d'entités — peut provoquer quelques flickers ou doublons visuels.
-- Pour les détails techniques, voir [`CHANGELOG.md`](CHANGELOG.md) et [`SPEC.md`](SPEC.md).
+## Quick start
 
-## Prérequis
+1. Each player records their POV with Flashback during the same session.
+2. Collect the produced `.zip` files into your own `<gameDir>/flashback/replays/` folder.
+3. Launch Minecraft with **Flashback + MultiView** installed.
+4. Click the camera icon → **Select Replay**.
+5. Tick the checkbox at the right of each replay you want to merge (minimum 2).
+6. Click **Merge N Replays** in the top-right.
+7. Wait for the progress screen to finish.
+8. `merged_<timestamp>.zip` appears in the list — open it like any other replay.
 
-- Minecraft **1.21.11**
-- Fabric Loader **0.19.2+**
-- Fabric API **0.141.3+1.21.11**
-- Flashback **0.39.4**
+Chat-only fallback (and the only mode on MC 26.1+ for now):
 
-## Build (pour les développeurs)
+```
+/mv merge <source1> <source2> <output>
+```
+
+## Compatibility
+
+| Minecraft | Fabric Loader | Flashback | MultiView version |
+| --- | --- | --- | --- |
+| 1.21.9 / 1.21.10 | 0.19.2+ | 0.39.x | `0.3.1+mc1.21.9` |
+| 1.21.11 | 0.19.2+ | 0.39.4 | `0.3.1+mc1.21.11` |
+| 26.1 / 26.1.1 / 26.1.2 | 0.19.2+ | 0.40.0 | `0.3.1+mc26.1` (UI disabled — use `/mv merge`) |
+
+Requires Java 21 on 1.21.x and Java 25 on 26.1+. Fabric API is required.
+
+## Features
+
+- **N-way merge** of Flashback replays from the same session.
+- **Tick-perfect time alignment** via `ClientboundSetTimePacket`, with a fallback on `metadata.name`.
+- **Cross-source deduplication** — chunks (SHA-256 128-bit content hash), player info updates, system chat by content, entity moves.
+- **Multi-dimension support** — secondary POVs keep their dimension changes recorded as markers.
+- **Aggregated markers** from every POV merged onto the unified timeline.
+- **Integrated UI** — per-replay checkboxes in Flashback's *Select Replay* screen, no command typing required (1.21.x).
+- **Atomic rollback** — writes to a `.part` file and atomically renames on success, so a failed merge never destroys your existing replays.
+- **Bounded memory** — chat dedup is LRU-capped, chunk dedup uses cryptographic hashing, no unbounded growth on long sessions.
+- **i18n** — French and English.
+
+## Known limitations
+
+- **Secondary POVs are entities, not cameras.** Flashback only supports one local player, so the camera follows the POV that started recording first ("primary"); the other recorders are visible as regular player entities.
+- **4+ POV merges** may show minor visual artefacts in zones where several POVs hold conflicting chunk versions.
+- **MC 26.1+ UI is disabled.** The rendering API was renamed and the per-replay checkboxes can't be drawn yet; use `/mv merge` from the chat instead.
+- See `SPEC.md` for the full technical limitations list.
+
+## Build from source
 
 ```bash
+# Default branch — Minecraft 1.21.11
 ./gradlew build
 ```
 
-Le jar produit est dans `build/libs/`.
+The jar lands in `build/libs/`.
 
-## Dev client
+Multi-version builds use a templating script:
+
+```bash
+./scripts/build-version.sh 1.21.9
+./scripts/build-version.sh 1.21.11
+./scripts/build-version.sh 26.1     # requires JDK 25
+```
+
+## Development client
 
 ```bash
 ./gradlew runClient
 ```
 
-Pour développer localement avec Flashback :
+Local development with Flashback:
 
-1. Télécharge `Flashback-0.39.4-for-MC1.21.11.jar` depuis [Modrinth](https://modrinth.com/mod/flashback).
-2. Place-le dans `libs/` (compile-time) et `run/mods/` (runtime).
-3. Les deux dossiers sont gitignored — **jamais committer le jar**.
-4. **Patch lattice** : la lib `lattice` bundlée dans Flashback 0.39.4 a un bug de mixin sur Yarn 1.21.11+build.4 qui crash l'UI. Procédure de patch dev-only dans [`SPEC.md`](SPEC.md) §10.
+1. Download `Flashback-<ver>-for-MC<mc>.jar` from [Modrinth](https://modrinth.com/mod/flashback).
+2. Drop it into `libs/` (compile-time) and `run/mods/` (runtime). Both folders are git-ignored — **never commit the Flashback jar**.
+3. On 1.21.11 with Yarn `+build.4`, apply the `lattice` mixin patch documented in `SPEC.md` §10.
 
 ## Documentation
 
-- [`CHANGELOG.md`](CHANGELOG.md) — versions et changements.
-- [`SPEC.md`](SPEC.md) — spec complète, journal de développement, dette technique.
-- [`docs/superpowers/specs/`](docs/superpowers/specs/) — design docs par phase.
-- [`docs/superpowers/plans/`](docs/superpowers/plans/) — plans d'implémentation par phase.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history.
+- [`SPEC.md`](SPEC.md) — full spec, design journal, technical debt list.
+- [`docs/superpowers/specs/`](docs/superpowers/specs/) — per-phase design documents.
+- [`docs/superpowers/plans/`](docs/superpowers/plans/) — per-phase implementation plans.
 
-## Contribuer
+## Contributing
 
-Les issues + PRs sont bienvenus sur [GitHub](https://github.com/Zeffut/MultiView/issues).
+Issues and pull requests are welcome on [GitHub](https://github.com/Zeffut/MultiView/issues). Please attach the affected MC version and a short reproduction (or sample replay folder when possible).
 
-## Licence
+## License
 
 [MIT](LICENSE) — Zeffut, 2026.
 
-*Flashback reste sous sa licence Moulberry restrictive. MultiView est un addon indépendant qui ne redistribue aucun code de Flashback.*
+*Flashback remains under its proprietary license by Moulberry. MultiView is a fully independent addon and does not redistribute any Flashback code.*
