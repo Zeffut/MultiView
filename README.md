@@ -33,7 +33,7 @@ Each player records their own POV using Flashback. MultiView aligns the recordin
 7. Wait for the progress screen to finish.
 8. `merged_<timestamp>.zip` appears in the list — open it like any other replay.
 
-Chat-only fallback (and the only mode on MC 26.1+ for now):
+Chat-only fallback (e.g. when you want to script merges):
 
 ```
 /mv merge <source1> <source2> <output>
@@ -43,9 +43,9 @@ Chat-only fallback (and the only mode on MC 26.1+ for now):
 
 | Minecraft | Fabric Loader | Flashback | MultiView version |
 | --- | --- | --- | --- |
-| 1.21.9 / 1.21.10 | 0.19.2+ | 0.39.x | `0.3.1+mc1.21.9` |
-| 1.21.11 | 0.19.2+ | 0.39.4 | `0.3.1+mc1.21.11` |
-| 26.1 / 26.1.1 / 26.1.2 | 0.19.2+ | 0.40.0 | `0.3.1+mc26.1` (UI disabled — use `/mv merge`) |
+| 1.21.9 / 1.21.10 | 0.19.2+ | 0.39.x | `0.3.2+mc1.21.9` |
+| 1.21.11 | 0.19.2+ | 0.39.4 | `0.3.2+mc1.21.11` |
+| 26.1 / 26.1.1 / 26.1.2 | 0.19.2+ | 0.40.0 | `0.3.2+mc26.1` |
 
 Requires Java 21 on 1.21.x and Java 25 on 26.1+. Fabric API is required.
 
@@ -65,7 +65,6 @@ Requires Java 21 on 1.21.x and Java 25 on 26.1+. Fabric API is required.
 
 - **Secondary POVs are entities, not cameras.** Flashback only supports one local player, so the camera follows the POV that started recording first ("primary"); the other recorders are visible as regular player entities.
 - **4+ POV merges** may show minor visual artefacts in zones where several POVs hold conflicting chunk versions.
-- **MC 26.1+ UI is disabled.** The rendering API was renamed and the per-replay checkboxes can't be drawn yet; use `/mv merge` from the chat instead.
 - See `SPEC.md` for the full technical limitations list.
 
 ## Build from source
