@@ -18,30 +18,21 @@ public final class MultiViewMod implements ClientModInitializer {
             InspectCommand.register(dispatcher);
             MergeCommand.register(dispatcher);
         });
-        // Phase 5: register merge UI via reflection. The fr.zeffut.multiview.ui
-        // package references MC client APIs (GuiGraphics, Screens.afterRender,
-        // Screens.getButtons) that changed between 1.21.x and 26.1+, so we either
-        // ship the ui package (1.21.x builds) or we ship without it (26.1+ builds
-        // where the package is excluded from compilation entirely). Reflection
-        // keeps MultiViewMod itself portable.
-        boolean uiAvailable = false;
+        // Phase 5: register the merge UI via reflection. We ship one of two
+        // implementations of fr.zeffut.multiview.ui.MergeUi depending on the
+        // target MC version (see build.gradle and the java-classic /
+        // java-modern source roots). Loading the class is enough to detect
+        // whether the runtime can render the UI — if the rendering classes it
+        // imports don't exist, Class.forName will fail and we fall back to
+        // chat-only.
         try {
-            Class.forName("net.minecraft.client.gui.GuiGraphics");
-            Class.forName("fr.zeffut.multiview.ui.MergeUi");
-            uiAvailable = true;
+            Class<?> mergeUi = Class.forName("fr.zeffut.multiview.ui.MergeUi");
+            mergeUi.getDeclaredMethod("register").invoke(null);
         } catch (Throwable t) {
             LOGGER.warn("MultiView UI disabled on this MC version "
-                    + "({}). Use /mv merge via chat instead.",
-                    t.getClass().getSimpleName());
-        }
-        if (uiAvailable) {
-            try {
-                Class<?> mergeUi = Class.forName("fr.zeffut.multiview.ui.MergeUi");
-                mergeUi.getDeclaredMethod("register").invoke(null);
-            } catch (Throwable t) {
-                LOGGER.warn("MultiView UI registration failed ({}). "
-                        + "Use /mv merge via chat instead.", t.getClass().getSimpleName());
-            }
+                    + "({}: {}). Use /mv merge via chat instead.",
+                    t.getClass().getSimpleName(),
+                    t.getMessage() != null ? t.getMessage() : "(no message)");
         }
     }
 }
