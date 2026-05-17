@@ -5,9 +5,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Rapport stats + warnings d'un merge. Sérialisé en merge-report.json via Gson. */
+/** Merge stats + warnings report. Serialised to merge-report.json via Gson. */
 public final class MergeReport {
-    public String version = "0.1.0";
+    /** Schema version of this report file format (not the mod version). */
+    public String version = "0.2.0";
+    /** ISO-8601 UTC timestamp of when the merge finished. */
+    public String mergedAt;
+    /** MultiView mod version that produced this merge. */
+    public String multiviewVersion;
     public List<SourceInfo> sources = new ArrayList<>();
     public int mergedTotalTicks;
     public String alignmentStrategy; // "setTimePacket" | "metadataName" | "cliOverride"
@@ -17,6 +22,8 @@ public final class MergeReport {
 
     public static final class SourceInfo {
         public String folder;
+        /** Absolute path of the source replay folder/zip on the producing machine. */
+        public String absolutePath;
         public String uuid;
         public int totalTicks;
         public int tickOffset;

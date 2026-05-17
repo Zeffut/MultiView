@@ -175,6 +175,7 @@ public final class MergeOrchestrator {
             for (int i = 0; i < replays.size(); i++) {
                 MergeReport.SourceInfo si = new MergeReport.SourceInfo();
                 si.folder = replays.get(i).folder().getFileName().toString();
+                si.absolutePath = options.sources().get(i).toAbsolutePath().toString();
                 si.uuid = replays.get(i).metadata().uuid();
                 si.totalTicks = replays.get(i).metadata().totalTicks();
                 si.tickOffset = alignment.tickOffsets()[i];
@@ -290,7 +291,20 @@ public final class MergeOrchestrator {
                 Files.copy(iconSrc, destTmp.resolve("icon.png"));
             }
 
-            // Step C: Write merge-report.json
+            // Step C: Write merge-report.json (stamped with timestamp + producer version).
+            report.mergedAt = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC)
+                    .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+            // Read the mod version from fabric.mod.json on the classpath if available;
+            // fall back to "unknown" so the field is always present.
+            try (java.io.InputStream is = MergeOrchestrator.class.getResourceAsStream("/fabric.mod.json")) {
+                if (is != null) {
+                    String json = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                    java.util.regex.Matcher m = java.util.regex.Pattern
+                            .compile("\"version\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
+                    if (m.find()) report.multiviewVersion = m.group(1);
+                }
+            } catch (Throwable ignore) {}
+            if (report.multiviewVersion == null) report.multiviewVersion = "unknown";
             try (var w = Files.newBufferedWriter(destTmp.resolve("merge-report.json"))) {
                 new GsonBuilder().setPrettyPrinting().create().toJson(report, w);
             }
@@ -791,7 +805,19 @@ public final class MergeOrchestrator {
             int lastPurge = 0;
             boolean warnedOutOfOrder = false;
 
+            // ETA + cancellation support: capture the wall-clock start and the
+            // total tick count so the progress callback can include an estimated
+            // remaining time. The main streaming loop also checks the thread's
+            // interrupted flag so a cooperative cancel from the UI (cancelling
+            // the executor's Future with mayInterrupt=true) aborts the merge
+            // cleanly; existing finally blocks then clean tmp files + writers.
+            final long mergeStartNanos = System.nanoTime();
+            final int mergedTotalTicksForEta = Math.max(1, ctx.report.mergedTotalTicks);
+
             while (!pq.isEmpty()) {
+                if (Thread.interrupted()) {
+                    throw new IOException("Merge cancelled by user.");
+                }
                 SourceCursor cur = pq.poll();
                 int tickAbs = ctx.toAbsTick(cur.sourceIdx(), cur.head().tick());
 
@@ -1194,8 +1220,22 @@ public final class MergeOrchestrator {
 
                 processed++;
                 if (processed % 10_000 == 0) {
-                    progress.accept(String.format("Streaming merge... tick %d / %d",
-                            tickAbs, ctx.report.mergedTotalTicks));
+                    long elapsedNanos = System.nanoTime() - mergeStartNanos;
+                    String etaStr = "";
+                    if (tickAbs > 0 && elapsedNanos > 0) {
+                        long etaNanos = (long) ((double) elapsedNanos
+                                * (mergedTotalTicksForEta - tickAbs) / tickAbs);
+                        if (etaNanos > 0) {
+                            long etaSec = etaNanos / 1_000_000_000L;
+                            if (etaSec >= 60) {
+                                etaStr = String.format(" — ETA %dm %ds", etaSec / 60, etaSec % 60);
+                            } else {
+                                etaStr = String.format(" — ETA %ds", etaSec);
+                            }
+                        }
+                    }
+                    progress.accept(String.format("Streaming merge... tick %d / %d%s",
+                            tickAbs, ctx.report.mergedTotalTicks, etaStr));
                 }
             }
 

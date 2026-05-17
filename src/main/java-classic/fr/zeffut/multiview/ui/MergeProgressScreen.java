@@ -24,6 +24,13 @@ public class MergeProgressScreen extends Screen {
     private volatile boolean done = false;
     /** Set by the background thread if the merge fails. Null while running. */
     private volatile String errorMessage = null;
+    /** Future of the running merge — used to interrupt the worker when the user clicks Cancel. */
+    private volatile java.util.concurrent.Future<?> mergeFuture = null;
+    private Button cancelButton = null;
+
+    public void attachMergeFuture(java.util.concurrent.Future<?> future) {
+        this.mergeFuture = future;
+    }
 
     /** Dots animation counter (ticks). */
     private int tickCount = 0;
@@ -41,12 +48,28 @@ public class MergeProgressScreen extends Screen {
 
     @Override
     protected void init() {
-        // No close button — the screen closes automatically on completion.
-        // A "Back" button is added only as an escape hatch if the merge is done/failed.
-        // We always show it but it becomes active only after done/error.
-        int btnW = 120;
-        int btnX = this.width / 2 - btnW / 2;
+        // Two bottom buttons:
+        //   - Cancel : active while the merge runs, interrupts the worker thread.
+        //   - Back   : activated only once the merge is done or has errored.
+        int btnW = 100;
+        int gap = 8;
+        int totalW = btnW * 2 + gap;
+        int leftX = this.width / 2 - totalW / 2;
         int btnY = this.height / 2 + 40;
+
+        Button cancelBtn = Button.builder(
+                        Component.translatable("gui.cancel"),
+                        btn -> {
+                            java.util.concurrent.Future<?> f = this.mergeFuture;
+                            if (f != null) f.cancel(true);
+                            this.errorMessage = "Cancelled by user.";
+                            btn.active = false;
+                        })
+                .bounds(leftX, btnY, btnW, 20)
+                .build();
+        cancelBtn.active = true;
+        this.cancelButton = cancelBtn;
+        this.addRenderableWidget(cancelBtn);
 
         Button backBtn = Button.builder(
                         Component.translatable("gui.back"),
@@ -55,7 +78,7 @@ public class MergeProgressScreen extends Screen {
                                 this.minecraft.setScreen(this.previousScreen);
                             }
                         })
-                .bounds(btnX, btnY, btnW, 20)
+                .bounds(leftX + btnW + gap, btnY, btnW, 20)
                 .build();
         backBtn.active = false;
         this.addRenderableWidget(backBtn);
@@ -105,11 +128,17 @@ public class MergeProgressScreen extends Screen {
             // Return to the select-replay screen (or null if there was none)
             this.minecraft.setScreen(this.previousScreen);
         }
-        // Activate back button once done or errored
+        // Once the merge has reached a terminal state, disable Cancel and
+        // enable Back. We can't just flip every button to active=true here
+        // because that would re-enable Cancel after the user clicked it.
         if ((done || errorMessage != null) && this.children() != null) {
             for (var child : this.children()) {
                 if (child instanceof Button btn) {
-                    btn.active = true;
+                    if (btn == this.cancelButton) {
+                        btn.active = false;
+                    } else {
+                        btn.active = true;
+                    }
                 }
             }
         }

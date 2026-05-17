@@ -295,7 +295,9 @@ public final class MergeUi {
 
         // Run merge in background. All UI callbacks are guarded so they're no-ops
         // when the user has navigated away from the progress screen (ESC, close, etc.).
-        EXECUTOR.submit(() -> {
+        // The Future is handed to the progress screen so its Cancel button can
+        // interrupt the worker thread.
+        java.util.concurrent.Future<?> future = EXECUTOR.submit(() -> {
             try {
                 MergeOrchestrator.run(options, phase ->
                         client.execute(() -> {
@@ -312,6 +314,7 @@ public final class MergeUi {
                 });
             }
         });
+        progressScreen.attachMergeFuture(future);
     }
 
     // -------------------------------------------------------------------------

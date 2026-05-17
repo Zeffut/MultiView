@@ -231,7 +231,7 @@ public final class MergeUi {
             state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
         }
 
-        EXECUTOR.submit(() -> {
+        java.util.concurrent.Future<?> future = EXECUTOR.submit(() -> {
             try {
                 MergeOrchestrator.run(options, phase ->
                         client.execute(() -> {
@@ -248,6 +248,7 @@ public final class MergeUi {
                 });
             }
         });
+        progressScreen.attachMergeFuture(future);
     }
 
     static ReplaySelectionList getSelectionList(SelectReplayScreen screen) {

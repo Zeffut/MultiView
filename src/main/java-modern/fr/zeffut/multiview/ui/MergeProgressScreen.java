@@ -25,6 +25,12 @@ public class MergeProgressScreen extends Screen {
     private final AtomicReference<String> currentPhase = new AtomicReference<>("Initialisation...");
     private volatile boolean done = false;
     private volatile String errorMessage = null;
+    private volatile java.util.concurrent.Future<?> mergeFuture = null;
+    private Button cancelButton = null;
+
+    public void attachMergeFuture(java.util.concurrent.Future<?> future) {
+        this.mergeFuture = future;
+    }
 
     private int tickCount = 0;
     private volatile double progress = -1.0;
@@ -39,9 +45,25 @@ public class MergeProgressScreen extends Screen {
 
     @Override
     protected void init() {
-        int btnW = 120;
-        int btnX = this.width / 2 - btnW / 2;
+        int btnW = 100;
+        int gap = 8;
+        int totalW = btnW * 2 + gap;
+        int leftX = this.width / 2 - totalW / 2;
         int btnY = this.height / 2 + 40;
+
+        Button cancelBtn = Button.builder(
+                        Component.translatable("gui.cancel"),
+                        btn -> {
+                            java.util.concurrent.Future<?> f = this.mergeFuture;
+                            if (f != null) f.cancel(true);
+                            this.errorMessage = "Cancelled by user.";
+                            btn.active = false;
+                        })
+                .bounds(leftX, btnY, btnW, 20)
+                .build();
+        cancelBtn.active = true;
+        this.cancelButton = cancelBtn;
+        this.addRenderableWidget(cancelBtn);
 
         Button backBtn = Button.builder(
                         Component.translatable("gui.back"),
@@ -50,7 +72,7 @@ public class MergeProgressScreen extends Screen {
                                 this.minecraft.setScreen(this.previousScreen);
                             }
                         })
-                .bounds(btnX, btnY, btnW, 20)
+                .bounds(leftX + btnW + gap, btnY, btnW, 20)
                 .build();
         backBtn.active = false;
         this.addRenderableWidget(backBtn);
@@ -84,7 +106,11 @@ public class MergeProgressScreen extends Screen {
         if ((done || errorMessage != null) && this.children() != null) {
             for (var child : this.children()) {
                 if (child instanceof Button btn) {
-                    btn.active = true;
+                    if (btn == this.cancelButton) {
+                        btn.active = false;
+                    } else {
+                        btn.active = true;
+                    }
                 }
             }
         }
