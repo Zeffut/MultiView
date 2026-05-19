@@ -30,6 +30,9 @@ public final class OverlapValidator {
 
     private OverlapValidator() {}
 
+    /** Per-replay first-segment size cap when probing for the SetTime anchor (OOM guard). */
+    private static final long MAX_PROBE_SEGMENT_BYTES = 256L * 1024L * 1024L; // 256 MB
+
     public enum Status {
         /** All pairs share at least one gameTime tick. */
         OK,
@@ -83,6 +86,18 @@ public final class OverlapValidator {
                 }
 
                 FlashbackReplay replay = FlashbackReader.open(replayRoot);
+                // OOM guard: refuse to probe replays whose first segment is unreasonably
+                // large. `findSetTimeAnchor` reads the segment fully into memory and we
+                // only need the first ~1200 ticks of packet data; anything beyond
+                // MAX_PROBE_SEGMENT_BYTES is either a recording artefact or a hostile file.
+                if (!replay.segmentPaths().isEmpty()) {
+                    long size = Files.size(replay.segmentPaths().get(0));
+                    if (size > MAX_PROBE_SEGMENT_BYTES) {
+                        MultiViewMod.LOGGER.warn("[OverlapValidator] {}: first segment is {} bytes (limit {}); returning UNKNOWN",
+                                p.getFileName(), size, MAX_PROBE_SEGMENT_BYTES);
+                        return Result.unknown();
+                    }
+                }
                 Optional<TimelineAligner.SetTimeAnchor> anchor =
                         TimelineAligner.findSetTimeAnchor(replay, idProvider);
                 if (anchor.isEmpty()) {

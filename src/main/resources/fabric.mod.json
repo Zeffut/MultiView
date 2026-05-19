@@ -24,7 +24,7 @@
     "fabricloader": ">=0.15.0",
     "fabric-api": "*",
     "minecraft": "${mod_minecraft_dep}",
-    "java": ">=21",
+    "java": "${mod_java_dep}",
     "flashback": "${mod_flashback_dep}"
   }
 }

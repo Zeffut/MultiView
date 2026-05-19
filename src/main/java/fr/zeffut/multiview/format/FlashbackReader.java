@@ -18,7 +18,15 @@ public final class FlashbackReader {
 
     private FlashbackReader() {}
 
-    /** Ouvre un replay depuis un dossier contenant metadata.json + cN.flashback. */
+    /**
+     * Opens a replay from a folder containing {@code metadata.json + cN.flashback}.
+     *
+     * <p>Chunk names declared inside {@code metadata.json} are attacker-controlled (anyone
+     * who hands us a {@code .flashback} can craft them). Each resolved segment path is
+     * therefore confined to the replay folder via a {@code normalize() + startsWith()} check
+     * — without this guard, a chunk name like {@code "../../../etc/foo"} would let us read
+     * arbitrary files into the merged output.
+     */
     public static FlashbackReplay open(Path folder) throws IOException {
         Path metadataPath = folder.resolve("metadata.json");
         if (!Files.isRegularFile(metadataPath)) {
@@ -29,9 +37,13 @@ public final class FlashbackReader {
             metadata = FlashbackMetadata.fromJson(r);
         }
 
+        Path folderAbs = folder.toAbsolutePath().normalize();
         List<Path> segments = new ArrayList<>();
         for (String name : metadata.chunks().keySet()) {
-            Path seg = folder.resolve(name);
+            Path seg = folder.resolve(name).normalize();
+            if (!seg.toAbsolutePath().normalize().startsWith(folderAbs)) {
+                throw new IOException("segment '" + name + "' escapes replay folder (zip-slip / path traversal)");
+            }
             if (!Files.isRegularFile(seg)) {
                 throw new IOException("segment " + name + " declared in metadata but missing from " + folder);
             }

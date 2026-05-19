@@ -107,20 +107,31 @@ public final class MergeUi {
 
     /**
      * Adds a renderable widget to an arbitrary {@link Screen} instance.
-     * {@code Screen.addRenderableWidget} is protected; reflection lets us call it
-     * from outside without modifying Flashback's screen classes.
+     *
+     * <p>{@code Screen.addRenderableWidget} is protected and its exact parameter type has
+     * shifted across 26.1.x patches (sometimes {@code GuiEventListener}, sometimes the more
+     * specific {@code AbstractWidget} / {@code Renderable}). Rather than pin to one name,
+     * we iterate every declared method on {@code Screen} and pick the first that accepts
+     * our {@link Button} via {@code isAssignableFrom}.
      */
     private static void addWidgetToScreen(Screen screen, Button button) {
-        try {
-            java.lang.reflect.Method add = Screen.class.getDeclaredMethod(
-                    "addRenderableWidget",
-                    Class.forName("net.minecraft.client.gui.components.events.GuiEventListener"));
-            add.setAccessible(true);
-            add.invoke(screen, button);
-        } catch (Throwable t) {
-            MultiViewMod.LOGGER.warn("[MultiView] Could not attach merge button via reflection: {}",
-                    t.getClass().getSimpleName() + " " + t.getMessage());
+        for (java.lang.reflect.Method m : Screen.class.getDeclaredMethods()) {
+            if (!"addRenderableWidget".equals(m.getName())) continue;
+            Class<?>[] params = m.getParameterTypes();
+            if (params.length != 1) continue;
+            if (!params[0].isAssignableFrom(button.getClass())) continue;
+            try {
+                m.setAccessible(true);
+                m.invoke(screen, button);
+                return;
+            } catch (Throwable t) {
+                MultiViewMod.LOGGER.warn("[MultiView] addRenderableWidget invoke failed ({}): {}",
+                        m, t.getClass().getSimpleName() + " " + t.getMessage());
+                return;
+            }
         }
+        MultiViewMod.LOGGER.warn("[MultiView] Could not find any Screen.addRenderableWidget overload accepting {} — merge button disabled.",
+                button.getClass().getName());
     }
 
     private static void drawCheckboxes(SelectionState state, SelectReplayScreen srs,

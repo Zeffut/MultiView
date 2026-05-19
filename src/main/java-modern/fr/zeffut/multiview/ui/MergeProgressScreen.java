@@ -141,7 +141,14 @@ public class MergeProgressScreen extends Screen {
         } else {
             int dots = (tickCount / 10) % 4;
             String dotStr = ".".repeat(dots) + " ".repeat(3 - dots);
-            drawCentered(context, Component.literal(phase + dotStr), centerX, phaseY, 0xFFCCCCCC);
+            // Static phases come as translation keys ("multiview.merge_progress.phase.*");
+            // dynamic phases (with %d formatting) come as pre-formatted literals.
+            Component phaseComponent = phase.startsWith("multiview.")
+                    ? Component.translatable(phase)
+                    : Component.literal(phase);
+            drawCentered(context,
+                    Component.literal("").append(phaseComponent).append(dotStr),
+                    centerX, phaseY, 0xFFCCCCCC);
         }
 
         if (errorMessage == null && !done) {

@@ -256,41 +256,81 @@ public final class EntityPacketRewriter {
      * Processes a MoveEntities action payload to update SourcePovTracker for the local player.
      * Does not modify the payload — MoveEntities passthrough is retained (see TODO below).
      *
-     * <p>Format: {@code VarInt dimensionCount; foreach: ResourceKey<Level> + VarInt entityCount;
-     * foreach entity: VarInt entityId + double x + double y + double z + ...}
+     * <p>Format: {@code VarInt dimensionCount; foreach: ResourceLocation worldKey
+     * + VarInt entityCount; foreach entity: VarInt entityId + double x + double y + double z
+     * + float yaw + float pitch + float headYaw + boolean onGround}
      *
-     * <p>TODO Phase 4.E: remap entity IDs within MoveEntities payloads.
+     * <p>Two responsibilities:
+     * <ul>
+     *   <li>POV tracking — when an entry's entityId matches the source's local player id,
+     *       update {@link SourcePovTracker} with the absolute position at this tick.</li>
+     *   <li>Entity-id remap — every {@code VarInt entityId} is rewritten through
+     *       {@link #safeRemap}; without this, secondary sources' local ids collide with
+     *       the primary's already-remapped globals and movements target the wrong entities
+     *       (frozen mobs, default rotations).</li>
+     * </ul>
+     *
+     * <p>Returns the rewritten payload, or the original {@code payload} reference when the
+     * rewrite could not run (fallback mode or decode failure) so the caller can decide
+     * whether to substitute it.
      */
-    public void processMoveEntities(int sourceIdx, int tickAbs, byte[] payload) {
-        // POV tracking is best-effort — skip entirely in fallback mode
-        if (fallbackMode) return;
-        // Only track local player positions if we know the local player entity ID
+    public byte[] processMoveEntities(int sourceIdx, int tickAbs, byte[] payload) {
+        if (fallbackMode) return payload;
         int localEid = localPlayerEntityId[sourceIdx];
-        if (localEid < 0) return;
 
         try {
-            ByteBuf buf = Unpooled.wrappedBuffer(payload);
-            int dimensionCount = VarInts.readVarInt(buf);
+            ByteBuf in = Unpooled.wrappedBuffer(payload);
+            ByteBuf out = Unpooled.buffer(payload.length);
+
+            int dimensionCount = VarInts.readVarInt(in);
+            VarInts.writeVarInt(out, dimensionCount);
+
             for (int d = 0; d < dimensionCount; d++) {
-                // ResourceKey<Level> = ResourceLocation = 2 VarInt-prefixed strings (namespace + path)
-                // Actually ResourceLocation.encode writes: VarInt-length string (full "namespace:path")
-                skipResourceLocation(buf);
-                int entityCount = VarInts.readVarInt(buf);
+                int rlStart = in.readerIndex();
+                skipResourceLocation(in);
+                int rlEnd = in.readerIndex();
+                out.writeBytes(payload, rlStart, rlEnd - rlStart);
+
+                int entityCount = VarInts.readVarInt(in);
+                VarInts.writeVarInt(out, entityCount);
+
                 for (int e = 0; e < entityCount; e++) {
-                    int eid = VarInts.readVarInt(buf);
-                    double x = buf.readDouble();
-                    double y = buf.readDouble();
-                    double z = buf.readDouble();
-                    // float yaw + float pitch + float headYaw + boolean onGround
-                    buf.skipBytes(4 + 4 + 4 + 1);
-                    if (eid == localEid) {
+                    int eid = VarInts.readVarInt(in);
+                    double x = in.readDouble();
+                    double y = in.readDouble();
+                    double z = in.readDouble();
+                    float yaw = in.readFloat();
+                    float pitch = in.readFloat();
+                    float headYaw = in.readFloat();
+                    boolean onGround = in.readBoolean();
+
+                    if (localEid >= 0 && eid == localEid) {
                         povTracker.update(sourceIdx, tickAbs, x, y, z);
                     }
+
+                    int globalEid = safeRemap(sourceIdx, eid);
+                    VarInts.writeVarInt(out, globalEid);
+                    out.writeDouble(x);
+                    out.writeDouble(y);
+                    out.writeDouble(z);
+                    out.writeFloat(yaw);
+                    out.writeFloat(pitch);
+                    out.writeFloat(headYaw);
+                    out.writeBoolean(onGround);
                 }
             }
-        } catch (Exception e) {
-            // Non-fatal: POV tracking is best-effort
-            LOG.debug("EntityPacketRewriter: MoveEntities parse failed for POV tracking: " + e.getMessage());
+
+            byte[] result = new byte[out.readableBytes()];
+            out.readBytes(result);
+            return result;
+        } catch (Exception ex) {
+            long key = (((long) -1) << 32) | (sourceIdx & 0xFFFFFFFFL);
+            int n = rewriteFailureCounts.merge(key, 1, Integer::sum);
+            if (n == 1 || n == 100 || n == 10_000) {
+                LOG.warn("EntityPacketRewriter: MoveEntities rewrite failed from source={} (#{}): {}",
+                        sourceIdx, n, ex.getMessage());
+            }
+            return payload;
         }
     }
 
@@ -409,43 +449,37 @@ public final class EntityPacketRewriter {
     }
 
     /**
-     * Rewrites SET_ENTITY_LINK (EntityAttachS2CPacket).
-     * Format: VarInt packetId + int32 attachedEntityId + int32 holdingEntityId
+     * Rewrites {@code SET_ENTITY_LINK} ({@code ClientboundSetEntityLinkPacket}).
      *
-     * <p>NOTE: EntityAttachS2CPacket uses int32 (not VarInt) for both IDs according
-     * to the MC wire format. We remap both.
+     * <p>Wire format: {@code VarInt packetId + int32 attachedEntityId + int32 holdingEntityId}
+     * — both ids are written via {@code FriendlyByteBuf.writeInt} (fixed 4 bytes), NOT VarInt.
+     * The original implementation read them as VarInts which truncated or mis-decoded for
+     * any id above 127.
+     *
+     * <p>{@code holding} is the sentinel for "no leash" — in MC ≥1.20 the packet writes
+     * {@code sourceEntity == null ? 0 : id} (so the sentinel is {@code 0}); older codepaths
+     * used {@code -1}. We pass either sentinel through unchanged to avoid remapping
+     * "no holder" into a random global id (which would otherwise attach the leash to a
+     * different entity in the merged playback).
      */
     private byte[] rewriteSetEntityLink(int sourceIdx, byte[] payload) {
         ByteBuf in = Unpooled.wrappedBuffer(payload);
 
-        // Read and copy packetId
         int packetIdStart = in.readerIndex();
         readVarIntFromBuf(in);
         int afterPid = in.readerIndex();
 
-        // EntityAttachS2CPacket uses VarInt for attached, then VarInt for holding
-        // Let's verify by checking the CODEC — actually looking at the binary format:
-        // The MC protocol uses VarInt for entity IDs in most packets.
-        // EntityAttachS2CPacket writes: buf.writeInt(attachedEntityId); buf.writeInt(holdingEntityId);
-        // Wait — let me check if it's int or VarInt
-        // From the javap output and MC source: EntityAttachS2CPacket uses int (fixed 4 bytes) for both IDs
-        // Actually MC 1.21 uses VarInt for most entity IDs. Let's use binary splice as fallback.
-        // To be safe, use the single-entity splice for attached, and handle holding specially.
-
-        // Use binary splice approach: read packetId, then two VarInts
-        int attached = VarInts.readVarInt(in);
-        int holding  = VarInts.readVarInt(in);
-        // remaining bytes
+        int attached = in.readInt();
+        int holding  = in.readInt();
         int remaining = in.readableBytes();
 
         int globalAttached = safeRemap(sourceIdx, attached);
-        // holding can be -1 (no holder in MC). Remap only if positive.
-        int globalHolding = holding < 0 ? holding : safeRemap(sourceIdx, holding);
+        int globalHolding = (holding <= 0) ? holding : safeRemap(sourceIdx, holding);
 
-        ByteBuf out = Unpooled.buffer(payload.length + 8);
+        ByteBuf out = Unpooled.buffer(payload.length);
         out.writeBytes(payload, packetIdStart, afterPid - packetIdStart);
-        VarInts.writeVarInt(out, globalAttached);
-        VarInts.writeVarInt(out, globalHolding);
+        out.writeInt(globalAttached);
+        out.writeInt(globalHolding);
         if (remaining > 0) {
             out.writeBytes(payload, payload.length - remaining, remaining);
         }

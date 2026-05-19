@@ -2,6 +2,46 @@
 
 All notable changes are listed here. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0-beta.1] — 2026-05-19
+
+Audit-driven beta. Multi-agent audit pass surfaced 35 findings across security, correctness, cross-version compatibility, and merge algorithm; this release closes the two CRITICAL issues plus 10 HIGH-severity ones.
+
+### Fixed — CRITICAL
+
+- **MoveEntities entity-id remap (Phase 4.E, was deferred)** — `EntityPacketRewriter.processMoveEntities` now decodes the bulk-tick payload, rewrites every `VarInt entityId` through `safeRemap`, and returns the new bytes for emission. Previously the action was passthrough, causing secondary sources' local entity ids to collide with the primary's global namespace; the visible symptom was frozen mobs with default rotations during overlapping merges. This was the underlying cause of GitHub issue #1.
+- **`SET_ENTITY_LINK` wire format** — `ClientboundSetEntityLinkPacket` uses `int32` (4 bytes) per id, not VarInt. The previous `VarInts.readVarInt` call mis-decoded any id above 127, truncating or shifting the payload and either dropping leashes or breaking subsequent packet parsing. Read/write switched to `readInt`/`writeInt`. The "no holder" sentinel was also corrected from `< 0` to `<= 0` to cover both legacy and modern MC encodings.
+
+### Fixed — HIGH (security)
+
+- **Path traversal via `metadata.json` chunk names** — `FlashbackReader.open` now normalises every resolved segment path and rejects anything that escapes the replay folder. A crafted chunk name like `"../../etc/foo"` would previously have let us read arbitrary files into the merged output.
+- **Zip-bomb entry-count guard** — extraction now caps zip entries at `65_536` per source on top of the existing 5 GB total-bytes cap, preventing inode/FD exhaustion attacks via many tiny entries.
+- **`OverlapValidator` OOM guard** — pre-merge probe now refuses to mount-and-stream zip segments larger than 256 MB; the validator only needs the first ~1200 ticks of packet data and used to materialise the entire first segment on heap.
+
+### Fixed — HIGH (correctness)
+
+- **PIU bulk re-emit on mid-segment intercalation** — `copyPrimarySnapshotForTick` now receives the `snapshotPiuId` argument on both call sites, including the intercalation rollover path that previously fell back to the 5-arg overload (passing `-1`). PIU(ADD_PLAYER) was re-emitting at every segment boundary, causing every player's "joined the game" chat to refire mid-playback.
+- **Snapshot read uses `FileChannel.map`** instead of `Files.readAllBytes` — primary segments can be hundreds of megabytes; the previous `readAllBytes` allocated full segment bytes on heap at every segment boundary, producing OOM on long replays. Now mirrors the mmap pattern already used for the first-segment cold-start copy.
+- **`HURT_ANIMATION` and `PLAYER_COMBAT_KILL` reclassified `EGO → ENTITY`** — both packets start with `VarInt entityId` and routed through `EntityPacketRewriter.rewriteSingleEntityId` for global-id remap. Previously they used raw EGO passthrough, leaving local ids unremapped so the animation targeted a non-existent entity in the merged stream.
+
+### Fixed — HIGH (cross-version)
+
+- **`java >= 25` for the 26.1.x jar** — `fabric.mod.json` now templates the `java` dependency through `${mod_java_dep}`; 1.21.x jars declare `>= 21`, the 26.1.x jar declares `>= 25`. Previously all jars advertised `>= 21`, so a user on JDK 21 trying to load the 26.1 jar would crash at classload with an opaque `UnsupportedClassVersionError` instead of a clean Fabric loader rejection.
+- **Robust `addRenderableWidget` reflection on 26.1+** — instead of pinning to `Class.forName("...GuiEventListener")` for the parameter type (which silently disabled the merge button if 26.1.x renamed the method), the modern `MergeUi` iterates `Screen.class.getDeclaredMethods()` and binds to whichever overload accepts the `Button` via `isAssignableFrom`.
+
+### Fixed — i18n
+
+- **Phase translation keys now actually consumed** — `MergeOrchestrator.run` emits `multiview.merge_progress.phase.*` keys instead of hard-coded French literals, and both `MergeProgressScreen` variants pick `Component.translatable` vs `Component.literal` based on the `"multiview."` prefix. EN users no longer see French progress labels.
+
+### Deferred (tracked as follow-up)
+
+- Entity-id race conditions in `EntityMerger` (H8, H9): UUID-match path overwrites prior mappings; `safeRemap` auto-assigns phantom globals when a packet arrives before its source's `AddEntity`. Both real but carry regression risk — separate focused session.
+- `SOUND_ENTITY` / `LEVEL_EVENT` entity id remap (H7): non-trivial because the entity id is not the first field; needs dedicated rewriters.
+- `MergeOrchestrator` still ≥1300 lines; refactor deferred.
+
+### Audit posture
+
+Two independent audit passes were dispatched (security/correctness/cross-version/merge-algorithm + build verification). The first found 35 findings; the second verified all 10 applied fixes are correct and identified residual MEDIUM/LOW items. None of the residuals block this beta.
+
 ## [0.3.5] — 2026-05-19
 
 Hard block on merges that would silently produce broken output.

@@ -63,6 +63,9 @@ public final class MergeOrchestrator {
     /** Maximum total uncompressed size when extracting source zips (zip-bomb guard). */
     private static final long MAX_EXTRACTED_SOURCE_BYTES = 5L * 1024L * 1024L * 1024L; // 5 GB
 
+    /** Maximum number of zip entries per source (zip-bomb guard — inode / FD exhaustion). */
+    private static final int MAX_ZIP_ENTRIES_PER_SOURCE = 65_536;
+
     public static MergeReport run(MergeOptions options, Consumer<String> progress)
             throws IOException {
         // Validate inputs early — at least 2 sources required for a merge to be meaningful.
@@ -92,7 +95,7 @@ public final class MergeOrchestrator {
             }
 
             // 1. Open sources — extract zips to temp folders since FlashbackReader reads folders
-            progress.accept("Ouverture des sources...");
+            progress.accept("multiview.merge_progress.phase.opening");
             List<FlashbackReplay> replays = new ArrayList<>();
             for (Path src : options.sources()) {
                 Path sourceToOpen = src;
@@ -100,11 +103,16 @@ public final class MergeOrchestrator {
                     Path tempDir = Files.createTempDirectory("multiview-source-");
                     tempExtractDirs.add(tempDir);
                     long totalExtracted = 0L;
+                    int entryCount = 0;
                     try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(
                             Files.newInputStream(src))) {
                         java.util.zip.ZipEntry entry;
                         Path tempDirNorm = tempDir.toAbsolutePath().normalize();
                         while ((entry = zis.getNextEntry()) != null) {
+                            if (++entryCount > MAX_ZIP_ENTRIES_PER_SOURCE) {
+                                throw new IOException("Source zip entry count exceeds limit ("
+                                        + MAX_ZIP_ENTRIES_PER_SOURCE + "): " + src);
+                            }
                             // Zip-slip guard: ensure the resolved entry stays inside tempDir.
                             Path out = tempDir.resolve(entry.getName()).toAbsolutePath().normalize();
                             if (!out.startsWith(tempDirNorm)) {
@@ -115,8 +123,8 @@ public final class MergeOrchestrator {
                             if (entry.isDirectory()) {
                                 Files.createDirectories(out);
                             } else {
-                                Files.createDirectories(out.getParent());
-                                // Stream copy with running byte counter (zip-bomb guard).
+                                Path parent = out.getParent();
+                                if (parent != null) Files.createDirectories(parent);
                                 try (OutputStream os = Files.newOutputStream(out,
                                         java.nio.file.StandardOpenOption.CREATE,
                                         java.nio.file.StandardOpenOption.TRUNCATE_EXISTING)) {
@@ -148,7 +156,7 @@ public final class MergeOrchestrator {
             }
 
             // 2. Find anchors + align
-            progress.accept("Alignement temporel...");
+            progress.accept("multiview.merge_progress.phase.aligning");
             PacketIdProvider idProvider = PacketIdProvider.minecraftRuntime();
             List<TimelineAligner.Source> alignSources = new ArrayList<>();
             for (int i = 0; i < replays.size(); i++) {
@@ -231,7 +239,7 @@ public final class MergeOrchestrator {
             // 6. Copy caches from ALL sources into merged level_chunk_caches/, renumbering files
             // sequentially. Primary's files stay at their original indices (0, 1, …).
             // Secondary sources' files follow, offset by the number of files from prior sources.
-            progress.accept("Copying caches from all sources...");
+            progress.accept("multiview.merge_progress.phase.caches");
             Path destCacheDir = destTmp.resolve("level_chunk_caches");
             Files.createDirectories(destCacheDir);
             int[] fileOffset = new int[replays.size()];
@@ -268,14 +276,14 @@ public final class MergeOrchestrator {
             report.stats.chunkCachesConcatenated = nextGlobalFileIdx;
 
             // 7. Stream merge
-            progress.accept("Streaming merge...");
+            progress.accept("multiview.merge_progress.phase.streaming");
             Map<String, Integer> segmentDurations = streamMerge(
                     ctx, classifier, worldMerger, worldRewriter, entityMerger, entityRewriter,
                     idRemapper, globalDeduper, povTracker, secondarySynth,
                     fileOffset, destTmp, progress);
 
             // Step A: Write merged metadata.json
-            progress.accept("Écriture metadata.json...");
+            progress.accept("multiview.merge_progress.phase.metadata");
             FlashbackMetadata primaryMeta = replays.get(primaryIdx).metadata();
             FlashbackMetadata mergedMeta = buildMergedMetadata(
                     primaryMeta, replays, alignment.mergedTotalTicks(),
@@ -318,7 +326,7 @@ public final class MergeOrchestrator {
             // Stale .part from a previous failed run — safe to remove (we own the .part suffix).
             Files.deleteIfExists(destPart);
 
-            progress.accept("Packaging zip...");
+            progress.accept("multiview.merge_progress.phase.packaging");
             zipDirectory(destTmp, destPart);
 
             // Re-check just before the move to close the TOCTOU window between the
@@ -351,7 +359,7 @@ public final class MergeOrchestrator {
                 try { deleteRecursively(td); } catch (IOException ignore) {}
             }
 
-            progress.accept("Merge terminé → " + destZip.getFileName());
+            progress.accept("multiview.merge_progress.phase.done");
             return report;
 
         } catch (IOException | RuntimeException e) {
@@ -903,7 +911,8 @@ public final class MergeOrchestrator {
                         currentWriter = new SegmentWriter(nextSegName, mainRegistry);
                         writerHolder[0] = currentWriter;
                         copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
-                                currentWriter, currentSegmentStart, mainRegistry, ctx.report);
+                                currentWriter, currentSegmentStart, mainRegistry, ctx.report,
+                                snapshotPiuId);
                         currentWriter.endSnapshot();
                         currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
                     }
@@ -1081,11 +1090,15 @@ public final class MergeOrchestrator {
                                 }
                             }
                         } else if (cur.head().action() instanceof Action.MoveEntities me) {
-                            // MoveEntities: update POV tracker, then passthrough.
-                            // TODO Phase 4.E: remap entity IDs within MoveEntities payload.
-                            entityRewriter.processMoveEntities(
+                            // MoveEntities: update POV tracker AND remap every entity id
+                            // before re-emitting. Without the remap, secondary sources'
+                            // local ids would collide with the primary's globals and
+                            // produce frozen mobs with default rotations.
+                            byte[] rewritten = entityRewriter.processMoveEntities(
                                     cur.sourceIdx(), tickAbs, me.bytes());
-                            writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
+                            Action.MoveEntities updated =
+                                    (rewritten == me.bytes()) ? me : new Action.MoveEntities(rewritten);
+                            writeActionToMain(currentWriter, mainRegistry, updated, ctx.report);
                         } else {
                             writeActionToMain(currentWriter, mainRegistry, cur.head().action(), ctx.report);
                         }
@@ -1309,15 +1322,6 @@ public final class MergeOrchestrator {
             SegmentWriter dest,
             int absTick,
             List<String> destRegistry,
-            MergeReport report) {
-        copyPrimarySnapshotForTick(primary, dest, absTick, destRegistry, report, -1);
-    }
-
-    private static void copyPrimarySnapshotForTick(
-            FlashbackReplay primary,
-            SegmentWriter dest,
-            int absTick,
-            List<String> destRegistry,
             MergeReport report,
             int skipPidPlayerInfoUpdate) {
 
@@ -1349,10 +1353,21 @@ public final class MergeOrchestrator {
         Path segPath = segments.get(targetSegmentIndex);
         int copiedCount = 0;
         int droppedCount = 0;
-        try {
-            byte[] segBytes = Files.readAllBytes(segPath);
+        try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(
+                segPath, java.nio.file.StandardOpenOption.READ)) {
+            // Memory-map the segment instead of fully materialising it on heap; primary
+            // segments can be several hundred MB and we only walk the snapshot prefix.
+            // Mirrors the mmap pattern used for the first-segment copy on cold start.
+            long size = ch.size();
+            if (size <= 0 || size > Integer.MAX_VALUE) {
+                report.warn("copyPrimarySnapshotForTick: skip — segment size out of range ("
+                        + size + ") for " + segPath);
+                return;
+            }
+            java.nio.ByteBuffer mapped = ch.map(
+                    java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, size);
             FlashbackByteBuf segBuf = new FlashbackByteBuf(
-                    io.netty.buffer.Unpooled.wrappedBuffer(segBytes));
+                    io.netty.buffer.Unpooled.wrappedBuffer(mapped));
             SegmentReader reader = new SegmentReader(segPath.getFileName().toString(), segBuf);
             List<String> primaryRegistry = reader.registry();
 

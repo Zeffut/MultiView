@@ -172,10 +172,13 @@ public final class GamePacketDispatch {
         m.put(GamePacketTypes.CLIENTBOUND_SET_PLAYER_INVENTORY, Category.EGO);
         // ClientboundPlayerPositionPacket (PLAYER_POSITION)
         m.put(GamePacketTypes.CLIENTBOUND_PLAYER_POSITION, Category.EGO);
-        // DamageTiltS2CPacket (HURT_ANIMATION)
-        m.put(GamePacketTypes.CLIENTBOUND_HURT_ANIMATION, Category.EGO);
-        // DeathMessageS2CPacket (PLAYER_COMBAT_KILL)
-        m.put(GamePacketTypes.CLIENTBOUND_PLAYER_COMBAT_KILL, Category.EGO);
+        // DamageTiltS2CPacket (HURT_ANIMATION) and DeathMessageS2CPacket (PLAYER_COMBAT_KILL)
+        // both start with `VarInt entityId` — routed to ENTITY so EntityPacketRewriter's
+        // rewriteSingleEntityId remaps the id to the global namespace. Previously EGO routing
+        // left local ids unremapped, so the hurt animation / death message targeted an entity
+        // that no longer existed in the merge.
+        m.put(GamePacketTypes.CLIENTBOUND_HURT_ANIMATION, Category.ENTITY);
+        m.put(GamePacketTypes.CLIENTBOUND_PLAYER_COMBAT_KILL, Category.ENTITY);
         // PlayerRespawnS2CPacket (RESPAWN) — dimension change, MUST follow primary only.
         // Otherwise secondary's dim change drags the replay client into their dimension,
         // causing primary's subsequent chunk packets to be applied to the wrong dimension

@@ -181,8 +181,13 @@ public class MergeProgressScreen extends Screen {
         } else {
             int dots = (tickCount / 10) % 4;
             String dotStr = ".".repeat(dots) + " ".repeat(3 - dots);
+            // MergeOrchestrator emits either a translation key ("multiview.merge_progress.phase.*")
+            // for static phases or a pre-formatted dynamic string. Pick the right Component flavour.
+            Component phaseComponent = phase.startsWith("multiview.")
+                    ? Component.translatable(phase)
+                    : Component.literal(phase);
             context.drawCenteredString(this.font,
-                    Component.literal(phase + dotStr),
+                    Component.literal("").append(phaseComponent).append(dotStr),
                     centerX, phaseY, 0xFFCCCCCC);
         }
 
