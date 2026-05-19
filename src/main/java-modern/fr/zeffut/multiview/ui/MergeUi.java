@@ -8,10 +8,13 @@ import com.moulberry.flashback.screen.select_replay.SelectReplayScreen;
 import fr.zeffut.multiview.MultiViewMod;
 import fr.zeffut.multiview.merge.MergeOptions;
 import fr.zeffut.multiview.merge.MergeOrchestrator;
+import fr.zeffut.multiview.merge.OverlapValidator;
+import fr.zeffut.multiview.merge.PacketIdProvider;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.network.chat.Component;
@@ -20,6 +23,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -197,15 +201,42 @@ public final class MergeUi {
         return true;
     }
 
+    /**
+     * Cache of overlap-validation results, keyed by the immutable Set of selected paths.
+     * Validation reads ~1200 ticks from each replay file, so we memoise to keep checkbox
+     * toggles responsive when the user revisits a previously-validated selection.
+     */
+    private static final Map<Set<Path>, OverlapValidator.Result> VALIDATION_CACHE = new HashMap<>();
+
     private static void updateMergeButton(SelectionState state) {
         if (state.mergeButton == null) return;
         int n = state.checkedPaths.size();
-        state.mergeButton.active = n >= 2;
-        if (n >= 2) {
-            state.mergeButton.setMessage(
-                    Component.translatable("multiview.button.merge_selected.count", n));
-        } else {
+
+        if (n < 2) {
+            state.mergeButton.active = false;
             state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
+            state.mergeButton.setTooltip(null);
+            return;
+        }
+
+        Set<Path> snapshot = Set.copyOf(state.checkedPaths);
+        OverlapValidator.Result result = VALIDATION_CACHE.computeIfAbsent(snapshot, s ->
+                OverlapValidator.validate(new ArrayList<>(s), PacketIdProvider.minecraftRuntime()));
+
+        Component countMsg = Component.translatable("multiview.button.merge_selected.count", n);
+
+        if (result.status() == OverlapValidator.Status.NO_OVERLAP) {
+            state.mergeButton.active = false;
+            state.mergeButton.setMessage(countMsg);
+            state.mergeButton.setTooltip(Tooltip.create(
+                    Component.translatable("multiview.button.merge_selected.no_overlap")));
+        } else {
+            // OK or UNKNOWN — both allow the merge to proceed. UNKNOWN means we couldn't
+            // probe a SetTime anchor in one of the replays; rather than blocking what we
+            // can't verify, we let the user try (in line with the product philosophy).
+            state.mergeButton.active = true;
+            state.mergeButton.setMessage(countMsg);
+            state.mergeButton.setTooltip(null);
         }
     }
 

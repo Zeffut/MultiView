@@ -1,6 +1,28 @@
 # Changelog
 
-Toutes les modifications notables apparaissent ici. Format basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
+All notable changes are listed here. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [0.3.5] — 2026-05-19
+
+Hard block on merges that would silently produce broken output.
+
+### Added
+
+- **`OverlapValidator`** — pre-merge guard that probes each selected replay for its `ClientboundSetTimePacket` anchor, computes its server-gameTime interval (`[start, start + totalTicks]`), and checks every pair for non-empty intersection. If any pair is disjoint, the Merge button stays disabled and a localised tooltip explains why. Wired into both `MergeUi-classic` (1.21.x) and `MergeUi-modern` (26.1+).
+- `multiview.button.merge_selected.no_overlap` i18n key in `en_us.json` and `fr_fr.json`.
+
+### Fixed
+
+- Validator transparently mounts `.flashback` zip files via `FileSystems.newFileSystem(...)` instead of expecting a pre-extracted folder — matches the on-disk layout Flashback actually produces.
+
+### Why
+
+A real user case surfaced the bug: someone ran a merge across two `.flashback` files recorded 11 days apart. The merge succeeded but produced visually broken output — entities vanished, others stuck with default rotations and no equipment. Root cause: server-side entity IDs are local to each recording client and there is no UUID-based matching for non-player entities, so any merge of non-overlapping POVs guarantees cross-source ID collisions. The fix is defensive: refuse upfront rather than emit silent garbage.
+
+### Internals
+
+- Validation is memoised per selection (`Map<Set<Path>, Result>`) so checkbox toggles stay responsive.
+- Returns `UNKNOWN` (not `NO_OVERLAP`) when an anchor is missing or the file cannot be read — we never block what we cannot verify.
 
 ## [0.3.0] — 2026-05-11
 

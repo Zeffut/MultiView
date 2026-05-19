@@ -1,6 +1,7 @@
 {
   "multiview.button.merge_selected": "Fusionner la sélection",
   "multiview.button.merge_selected.count": "Fusionner %d replays",
+  "multiview.button.merge_selected.no_overlap": "Ces replays n'ont pas été enregistrés au même moment — leurs périodes serveur ne se chevauchent pas. Les fusionner casserait les entités (mobs figés, équipement perdu, rotations par défaut). Choisissez des replays issus de sessions qui se recouvrent.",
   "multiview.merge_progress.title": "Fusion des replays...",
   "multiview.merge_progress.done": "Fusion terminée !",
   "multiview.merge_progress.phase.opening": "Ouverture des sources",
