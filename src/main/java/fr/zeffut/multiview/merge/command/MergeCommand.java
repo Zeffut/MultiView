@@ -198,6 +198,7 @@ public final class MergeCommand {
                                         String.valueOf(t.getMessage())),
                                 "duration_ms", (System.nanoTime() - startNanos) / 1_000_000L,
                                 "source_count", sources.size()));
+                fr.zeffut.multiview.telemetry.ErrorReporter.report("merge", t);
                 LOG.error("[MultiView] Merge failed", t);
                 Minecraft.getInstance().execute(() ->
                         source.sendError(Component.literal("[MultiView] Merge failed: " + t.getMessage())));
