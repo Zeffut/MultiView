@@ -107,7 +107,11 @@ public final class MergeUi {
         ScreenMouseEvents.allowMouseClick(screen).register((s, event) ->
                 handleMouseClick(state, srs, event.x(), event.y(), event.button()));
 
-        ScreenEvents.remove(screen).register(s -> state.checkedPaths.clear());
+        ScreenEvents.remove(screen).register(s -> {
+            state.checkedPaths.clear();
+            fr.zeffut.multiview.telemetry.Telemetry.capture(
+                    fr.zeffut.multiview.telemetry.EventNames.EVT_UI_CLOSED);
+        });
     }
 
     /**

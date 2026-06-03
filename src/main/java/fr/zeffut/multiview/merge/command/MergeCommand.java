@@ -192,7 +192,7 @@ public final class MergeCommand {
                         fr.zeffut.multiview.telemetry.EventNames.EVT_MERGE_FAILED,
                         java.util.Map.of(
                                 "phase", String.valueOf(phaseName[0]),
-                                "error_type", t.getClass().getSimpleName(),
+                                "error_type", t.getClass().getName(),
                                 "error_message",
                                     fr.zeffut.multiview.telemetry.Sanitizer.redactMessage(
                                         String.valueOf(t.getMessage())),
