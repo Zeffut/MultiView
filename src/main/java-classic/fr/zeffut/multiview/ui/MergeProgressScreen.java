@@ -60,6 +60,9 @@ public class MergeProgressScreen extends Screen {
         Button cancelBtn = Button.builder(
                         Component.translatable("gui.cancel"),
                         btn -> {
+                            fr.zeffut.multiview.telemetry.Telemetry.capture(
+                                    fr.zeffut.multiview.telemetry.EventNames.EVT_MERGE_CANCELLED,
+                                    java.util.Map.of("trigger", "ui", "phase", this.currentPhase.get()));
                             java.util.concurrent.Future<?> f = this.mergeFuture;
                             if (f != null) f.cancel(true);
                             this.errorMessage = "Cancelled by user.";

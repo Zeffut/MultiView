@@ -133,6 +133,9 @@ public final class MergeUi {
 
         Screens.getButtons(screen).add(mergeBtn);
 
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_UI_OPENED);
+
         // Draw checkboxes after the screen has rendered its normal content
         ScreenEvents.afterRender(screen).register((s, context, mouseX, mouseY, delta) ->
                 drawCheckboxes(state, srs, context, mouseX, mouseY));
@@ -264,6 +267,10 @@ public final class MergeUi {
         if (state.mergeButton == null) return;
         int n = state.checkedPaths.size();
 
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_UI_FILE_SELECTED,
+                java.util.Map.of("selected_count", n));
+
         if (n < 2) {
             state.mergeButton.active = false;
             state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
@@ -278,6 +285,9 @@ public final class MergeUi {
         Component countMsg = Component.translatable("multiview.button.merge_selected.count", n);
 
         if (result.status() == OverlapValidator.Status.NO_OVERLAP) {
+            fr.zeffut.multiview.telemetry.Telemetry.capture(
+                    fr.zeffut.multiview.telemetry.EventNames.EVT_OVERLAP_VALIDATION_FAILED,
+                    java.util.Map.of("selected_count", n));
             state.mergeButton.active = false;
             state.mergeButton.setMessage(countMsg);
             state.mergeButton.setTooltip(Tooltip.create(
@@ -325,6 +335,10 @@ public final class MergeUi {
             state.mergeButton.active = false;
             state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
         }
+
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_UI_MERGE_CLICKED,
+                java.util.Map.of("trigger", "ui"));
 
         // Run merge in background. All UI callbacks are guarded so they're no-ops
         // when the user has navigated away from the progress screen (ESC, close, etc.).
