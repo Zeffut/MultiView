@@ -4,11 +4,20 @@ All notable changes are listed here. Format based on [Keep a Changelog](https://
 
 ## Unreleased
 
+## [0.4.1-beta.1] — 2026-06-03
+
 ### Added
 
 - Anonymous, opt-out telemetry (PostHog, EU) to guide development: merge metrics,
   feature usage, versions, and sanitized error reports. Disable with `/mv telemetry off`
   or `-Dmultiview.telemetry=false`. See the README "Telemetry & privacy" section.
+
+### Fixed
+
+- Cross-version first-run notice: the chat API diverges between MC 1.21.x and 26.1
+  (`ChatComponent#addMessage` vs `addClientSystemMessage`), so the notice now routes
+  through a per-version `ui.ChatNotice` helper. All targets (1.21.11, 1.21.9/1.21.10,
+  26.1) build and pass the merge regression suite.
 
 ## [0.4.0-beta.1] — 2026-05-19
 
