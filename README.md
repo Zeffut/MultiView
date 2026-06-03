@@ -61,6 +61,23 @@ Requires Java 21 on 1.21.x and Java 25 on 26.1+. Fabric API is required.
 - **Bounded memory** — chat dedup is LRU-capped, chunk dedup uses cryptographic hashing, no unbounded growth on long sessions.
 - **i18n** — French and English.
 
+## Telemetry & privacy
+
+MultiView sends **anonymous** usage statistics via [PostHog](https://posthog.com) (EU servers)
+to help improve the mod. It is **enabled by default** but fully optional.
+
+**What is collected:** mod/Minecraft/Flashback versions, OS and Java version, locale, which
+features are used, merge counts/durations/sizes/outcomes, and sanitized error reports.
+
+**What is never collected:** player names or UUIDs, world/server names, file paths (only file
+names/sizes), or any replay contents. An anonymous random ID is used — it is not linked to your
+Minecraft account.
+
+**How to disable:**
+- In game: `/mv telemetry off` (and `/mv telemetry status` to check).
+- Or set the JVM flag `-Dmultiview.telemetry=false`.
+- Telemetry is automatically disabled in Fabric development environments.
+
 ## Known limitations
 
 - **Secondary POVs are entities, not cameras.** Flashback only supports one local player, so the camera follows the POV that started recording first ("primary"); the other recorders are visible as regular player entities.
