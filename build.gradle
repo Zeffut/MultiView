@@ -1,5 +1,6 @@
 plugins {
     id 'fabric-loom' version "${loom_version}"
+    id 'com.gradleup.shadow' version '9.4.2'
     id 'maven-publish'
 }
 
@@ -10,6 +11,10 @@ base {
     archivesName = project.archives_base_name
 }
 
+configurations {
+    shadow
+}
+
 // noIntermediateMappings is only valid on MC versions where Fabric API ships in mojmap-named
 // (e.g. MC 26.1+ where Yarn/Intermediary haven't been published).
 if (project.findProperty("no_intermediate") == "true") {
@@ -17,6 +22,7 @@ if (project.findProperty("no_intermediate") == "true") {
 }
 
 repositories {
+    mavenCentral()
 }
 
 dependencies {
@@ -55,6 +61,12 @@ dependencies {
     } else {
         logger.warn("Flashback jar not found at ${flashbackJar.path} — compiling without Flashback API bindings.")
     }
+
+    // PostHog telemetry SDK — shaded & relocated into the mod jar (see shadowJar below).
+    // The published artifact is a self-contained uber-jar (okhttp/kotlin/okio/org.json already
+    // bundled under com.posthog.java.shaded.*), so it has no runtime transitive deps.
+    shadow "com.posthog.java:posthog:1.2.0"
+    implementation "com.posthog.java:posthog:1.2.0"
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -116,4 +128,22 @@ jar {
     from("LICENSE") {
         rename { "${it}_${project.archives_base_name}" }
     }
+}
+
+shadowJar {
+    configurations = [project.configurations.shadow]
+    // Relocate the entire posthog namespace (covers its internally-shaded okhttp/kotlin/okio/org.json
+    // which already live under com.posthog.java.shaded.*).
+    relocate 'com.posthog.java', 'fr.zeffut.multiview.libs.posthog'
+    archiveClassifier = 'dev-shadow'
+}
+
+// Loom remaps the *shadowed* jar so the relocated PostHog classes ship inside the final mod jar.
+remapJar {
+    dependsOn shadowJar
+    inputFile = shadowJar.archiveFile
+}
+
+tasks.named('build') {
+    dependsOn shadowJar
 }
