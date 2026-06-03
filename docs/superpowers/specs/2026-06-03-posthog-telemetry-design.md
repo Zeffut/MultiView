@@ -21,6 +21,7 @@
 | PostHog host        | EU cloud (`https://eu.i.posthog.com`)                                  |
 | IP geolocation      | **Kept** (country/region level — useful for audience geography)         |
 | Dev/CI behaviour    | Auto-disabled when `FabricLoader.isDevelopmentEnvironment()`           |
+| Project / API key   | Shared `Default project` (id 192659), key `phc_zdMj4p5wo8EvfVApjb2EbfUHJ76zgYGM5wAGz5YJC359` (write-only). No dedicated project exists yet and the MCP cannot create one; events are tagged with an `app="multiview"` super property so they stay filterable and the key is a single constant to swap if a dedicated project is created later. |
 
 ## 3. Architecture
 
@@ -99,7 +100,8 @@ Every event also carries the super properties of §5.
 
 ## 5. Super properties (attached to every event)
 
-`mod_version`, `mc_version`, `flashback_version`, `fabric_loader_version`,
+`app` (constant `"multiview"` — discriminator so events stay filterable in the shared
+project), `mod_version`, `mc_version`, `flashback_version`, `fabric_loader_version`,
 `java_version`, `os_name`, `os_arch`, `locale`, `ui_capability`,
 `distinct_id` (anonymous UUID), `session_id` (UUID regenerated each game launch).
 
