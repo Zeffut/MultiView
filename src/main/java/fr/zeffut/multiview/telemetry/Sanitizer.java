@@ -9,9 +9,11 @@ import java.util.regex.Pattern;
 public final class Sanitizer {
     private Sanitizer() {}
 
-    // Matches unix (/Users/.., /home/..) and windows (C:\Users\..) absolute paths.
+    // Matches absolute/drive/UNC/backslash paths (unix /.., windows C:\.. or C:/.., UNC \\..,
+    // and relative \Users\.. fragments). Anchors on a drive prefix or 1-2 path separators;
+    // because regex can start mid-string, a username following the separator is always redacted.
     private static final Pattern PATH = Pattern.compile(
-            "(?:[A-Za-z]:\\\\|/)(?:[^\\s\"']*[\\\\/])?[^\\s\"']*");
+            "(?:[A-Za-z]:[\\\\/]|[\\\\/]{1,2})[^\\s\"']*");
 
     /** Last path segment of a unix or windows path; "" for null. */
     public static String basename(String path) {

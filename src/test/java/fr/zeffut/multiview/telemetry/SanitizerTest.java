@@ -33,4 +33,18 @@ class SanitizerTest {
                 Sanitizer.redactMessage("boom at C:\\Users\\alice\\AppData\\x"));
         assertEquals("no path here", Sanitizer.redactMessage("no path here"));
     }
+
+    @Test
+    void redactMessageHandlesWindowsBackslashAndUncPaths() {
+        assertFalse(Sanitizer.redactMessage("path \\Users\\carol\\replay was bad").contains("carol"),
+                "relative backslash path leaked username");
+        assertFalse(Sanitizer.redactMessage("subdir\\Users\\carol\\file.zip failed").contains("carol"),
+                "mid-string backslash path leaked username");
+        assertFalse(Sanitizer.redactMessage("\\\\server\\share\\Users\\dave\\x.zip").contains("dave"),
+                "UNC path leaked username");
+        assertFalse(Sanitizer.redactMessage("\\\\server\\share\\Users\\dave\\x.zip").contains("server"),
+                "UNC path leaked server name");
+        assertFalse(Sanitizer.redactMessage("cannot open C:/Users/bob/replay.zip").contains("bob"),
+                "forward-slash windows path leaked username");
+    }
 }
