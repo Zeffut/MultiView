@@ -82,11 +82,21 @@ public final class MultiViewMod implements ClientModInitializer {
         net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK
                 .register(client -> {
                     if (shown[0] || client.player == null) return;
-                    client.player.displayClientMessage(
-                            fr.zeffut.multiview.telemetry.command.TelemetryCommand.firstRunNotice(),
-                            false);
-                    cfg.markFirstRunNotified();
+                    // Show the notice via the per-version ui.ChatNotice helper, invoked
+                    // reflectively to keep this shared file UI-agnostic (the chat API diverges
+                    // across MC versions). Attempt once per session regardless of outcome; only
+                    // persist the "notified" flag on success so a transient failure retries next launch.
                     shown[0] = true;
+                    try {
+                        Class.forName("fr.zeffut.multiview.ui.ChatNotice")
+                                .getMethod("show", net.minecraft.network.chat.Component.class)
+                                .invoke(null,
+                                        fr.zeffut.multiview.telemetry.command.TelemetryCommand.firstRunNotice());
+                        cfg.markFirstRunNotified();
+                    } catch (Throwable t) {
+                        LOGGER.warn("[MultiView] could not show first-run telemetry notice: {}",
+                                t.getMessage());
+                    }
                 });
     }
 }
