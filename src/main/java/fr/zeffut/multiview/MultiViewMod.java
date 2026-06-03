@@ -14,25 +14,79 @@ public final class MultiViewMod implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         LOGGER.info("MultiView loaded — addon pour Flashback, merge de replays multi-joueurs.");
+
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             InspectCommand.register(dispatcher);
             MergeCommand.register(dispatcher);
+            fr.zeffut.multiview.telemetry.command.TelemetryCommand.register(dispatcher);
         });
-        // Phase 5: register the merge UI via reflection. We ship one of two
-        // implementations of fr.zeffut.multiview.ui.MergeUi depending on the
-        // target MC version (see build.gradle and the java-classic /
-        // java-modern source roots). Loading the class is enough to detect
-        // whether the runtime can render the UI — if the rendering classes it
-        // imports don't exist, Class.forName will fail and we fall back to
-        // chat-only.
+
+        String uiCapability;
         try {
             Class<?> mergeUi = Class.forName("fr.zeffut.multiview.ui.MergeUi");
             mergeUi.getDeclaredMethod("register").invoke(null);
+            uiCapability = detectUiVariant();
         } catch (Throwable t) {
             LOGGER.warn("MultiView UI disabled on this MC version "
                     + "({}: {}). Use /mv merge via chat instead.",
                     t.getClass().getSimpleName(),
                     t.getMessage() != null ? t.getMessage() : "(no message)");
+            uiCapability = "disabled";
         }
+
+        initTelemetry(uiCapability);
+    }
+
+    /** "modern" or "classic" depending on which MergeUi source root was compiled in. */
+    private static String detectUiVariant() {
+        try {
+            Class<?> mergeUi = Class.forName("fr.zeffut.multiview.ui.MergeUi");
+            Object v = mergeUi.getDeclaredField("UI_VARIANT").get(null);
+            return String.valueOf(v);
+        } catch (Throwable t) {
+            return "unknown";
+        }
+    }
+
+    private void initTelemetry(String uiCapability) {
+        try {
+            java.nio.file.Path configFile = net.fabricmc.loader.api.FabricLoader.getInstance()
+                    .getConfigDir().resolve("multiview-telemetry.json");
+            boolean devEnv = net.fabricmc.loader.api.FabricLoader.getInstance()
+                    .isDevelopmentEnvironment();
+            fr.zeffut.multiview.telemetry.Telemetry.init(configFile, uiCapability, devEnv);
+
+            boolean flashbackPresent = net.fabricmc.loader.api.FabricLoader.getInstance()
+                    .isModLoaded("flashback");
+            fr.zeffut.multiview.telemetry.Telemetry.capture(
+                    fr.zeffut.multiview.telemetry.EventNames.EVT_MOD_LOADED,
+                    java.util.Map.of("flashback_present", flashbackPresent));
+
+            maybeShowFirstRunNotice(configFile);
+
+            net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STOPPING
+                    .register(client -> fr.zeffut.multiview.telemetry.Telemetry.shutdown());
+
+            // Periodic session heartbeat.
+            fr.zeffut.multiview.telemetry.HeartbeatScheduler.start();
+        } catch (Throwable t) {
+            LOGGER.warn("[MultiView] telemetry setup failed: {}", t.getMessage());
+        }
+    }
+
+    private void maybeShowFirstRunNotice(java.nio.file.Path configFile) {
+        fr.zeffut.multiview.telemetry.TelemetryConfig cfg =
+                fr.zeffut.multiview.telemetry.TelemetryConfig.load(configFile);
+        if (cfg.isFirstRunNotified()) return;
+        final boolean[] shown = {false};
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK
+                .register(client -> {
+                    if (shown[0] || client.player == null) return;
+                    client.player.displayClientMessage(
+                            fr.zeffut.multiview.telemetry.command.TelemetryCommand.firstRunNotice(),
+                            false);
+                    cfg.markFirstRunNotified();
+                    shown[0] = true;
+                });
     }
 }

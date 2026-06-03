@@ -48,6 +48,8 @@ import java.util.concurrent.Executors;
  */
 public final class MergeUi {
 
+    public static final String UI_VARIANT = "modern";
+
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "multiview-merge-ui");
         t.setDaemon(true);
@@ -93,6 +95,9 @@ public final class MergeUi {
 
         addWidgetToScreen(screen, mergeBtn);
 
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_UI_OPENED);
+
         // Draw checkboxes during the extract-render-state phase (post-26.1 pipeline).
         ScreenEvents.afterExtract(screen).register((s, context, mouseX, mouseY, delta) ->
                 drawCheckboxes(state, srs, context, mouseX, mouseY));
@@ -102,7 +107,11 @@ public final class MergeUi {
         ScreenMouseEvents.allowMouseClick(screen).register((s, event) ->
                 handleMouseClick(state, srs, event.x(), event.y(), event.button()));
 
-        ScreenEvents.remove(screen).register(s -> state.checkedPaths.clear());
+        ScreenEvents.remove(screen).register(s -> {
+            state.checkedPaths.clear();
+            fr.zeffut.multiview.telemetry.Telemetry.capture(
+                    fr.zeffut.multiview.telemetry.EventNames.EVT_UI_CLOSED);
+        });
     }
 
     /**
@@ -223,6 +232,10 @@ public final class MergeUi {
         if (state.mergeButton == null) return;
         int n = state.checkedPaths.size();
 
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_UI_FILE_SELECTED,
+                java.util.Map.of("selected_count", n));
+
         if (n < 2) {
             state.mergeButton.active = false;
             state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
@@ -237,6 +250,9 @@ public final class MergeUi {
         Component countMsg = Component.translatable("multiview.button.merge_selected.count", n);
 
         if (result.status() == OverlapValidator.Status.NO_OVERLAP) {
+            fr.zeffut.multiview.telemetry.Telemetry.capture(
+                    fr.zeffut.multiview.telemetry.EventNames.EVT_OVERLAP_VALIDATION_FAILED,
+                    java.util.Map.of("selected_count", n));
             state.mergeButton.active = false;
             state.mergeButton.setMessage(countMsg);
             state.mergeButton.setTooltip(Tooltip.create(
@@ -272,6 +288,10 @@ public final class MergeUi {
             state.mergeButton.active = false;
             state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
         }
+
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_UI_MERGE_CLICKED,
+                java.util.Map.of("trigger", "ui"));
 
         java.util.concurrent.Future<?> future = EXECUTOR.submit(() -> {
             try {

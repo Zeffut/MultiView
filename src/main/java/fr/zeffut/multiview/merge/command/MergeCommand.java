@@ -75,6 +75,9 @@ public final class MergeCommand {
 
     private static int execute(FabricClientCommandSource source,
                                List<String> sourceNames, String outputName) {
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_COMMAND_USED,
+                java.util.Map.of("command", "merge", "source_count", sourceNames.size()));
         Path replayRoot = com.moulberry.flashback.Flashback.getReplayFolder();
         Path replayRootReal;
         try {
@@ -120,13 +123,63 @@ public final class MergeCommand {
         source.sendFeedback(Component.literal(
                 "[MultiView] \u26a0 /mv merge is deprecated — use the Merge button in the Select Replay screen (Phase 5)."));
         source.sendFeedback(Component.literal("[MultiView] Starting merge of " + sourceNames.size() + " sources..."));
+
+        final long startNanos = System.nanoTime();
+        final java.util.Map<String, Object> startProps = new java.util.HashMap<>();
+        startProps.put("source_count", sources.size());
+        startProps.put("input_bytes_total", totalSize(sources));
+        startProps.put("force", options.force());
+        startProps.put("tick_overrides", options.tickOverrides().size());
+        startProps.put("trigger", "command");
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_MERGE_STARTED, startProps);
+
         EXECUTOR.submit(() -> {
+            final long[] phaseStart = { System.nanoTime() };
+            final String[] phaseName = { null };
+            java.util.function.Consumer<String> progress = phase -> {
+                long now = System.nanoTime();
+                if (phaseName[0] != null) {
+                    fr.zeffut.multiview.telemetry.Telemetry.capture(
+                            fr.zeffut.multiview.telemetry.EventNames.EVT_MERGE_PHASE_COMPLETED,
+                            java.util.Map.of(
+                                    "phase", phaseName[0],
+                                    "duration_ms", (now - phaseStart[0]) / 1_000_000L));
+                }
+                phaseName[0] = phase;
+                phaseStart[0] = now;
+                Minecraft.getInstance().execute(() ->
+                        source.sendFeedback(Component.literal("[MultiView] " + phase)));
+            };
+
             try {
-                MergeReport report = MergeOrchestrator.run(options, phase -> {
-                    Minecraft.getInstance().execute(() ->
-                            source.sendFeedback(Component.literal("[MultiView] " + phase)));
-                });
+                MergeReport report = MergeOrchestrator.run(options, progress);
+                if (phaseName[0] != null) {
+                    fr.zeffut.multiview.telemetry.Telemetry.capture(
+                            fr.zeffut.multiview.telemetry.EventNames.EVT_MERGE_PHASE_COMPLETED,
+                            java.util.Map.of("phase", phaseName[0],
+                                    "duration_ms", (System.nanoTime() - phaseStart[0]) / 1_000_000L));
+                }
                 Path destZip = dest.resolveSibling(dest.getFileName() + ".zip");
+                long outBytes = java.nio.file.Files.exists(destZip)
+                        ? java.nio.file.Files.size(destZip) : -1L;
+
+                java.util.Map<String, Object> done = new java.util.HashMap<>();
+                done.put("duration_ms", (System.nanoTime() - startNanos) / 1_000_000L);
+                done.put("output_bytes", outBytes);
+                done.put("source_count", sources.size());
+                done.put("entities_merged_uuid", report.stats.entitiesMergedByUuid);
+                done.put("entities_merged_heuristic", report.stats.entitiesMergedByHeuristic);
+                done.put("entities_ambiguous", report.stats.entitiesAmbiguousMerged);
+                done.put("blocks_overwrites", report.stats.blocksLwwOverwrites);
+                done.put("blocks_conflicts", report.stats.blocksLwwConflicts);
+                done.put("globals_deduped", report.stats.globalPacketsDeduped);
+                done.put("merged_total_ticks", report.mergedTotalTicks);
+                done.put("alignment_strategy", String.valueOf(report.alignmentStrategy));
+                done.put("warnings", report.warnings.size());
+                fr.zeffut.multiview.telemetry.Telemetry.capture(
+                        fr.zeffut.multiview.telemetry.EventNames.EVT_MERGE_COMPLETED, done);
+
                 Minecraft.getInstance().execute(() ->
                         source.sendFeedback(Component.literal(String.format(
                                 "[MultiView] Done → %s | %d entities merged, %d blocks overwritten, %d globals deduped.",
@@ -135,11 +188,43 @@ public final class MergeCommand {
                                 report.stats.blocksLwwOverwrites,
                                 report.stats.globalPacketsDeduped))));
             } catch (Throwable t) {
+                fr.zeffut.multiview.telemetry.Telemetry.capture(
+                        fr.zeffut.multiview.telemetry.EventNames.EVT_MERGE_FAILED,
+                        java.util.Map.of(
+                                "phase", String.valueOf(phaseName[0]),
+                                "error_type", t.getClass().getName(),
+                                "error_message",
+                                    fr.zeffut.multiview.telemetry.Sanitizer.redactMessage(
+                                        String.valueOf(t.getMessage())),
+                                "duration_ms", (System.nanoTime() - startNanos) / 1_000_000L,
+                                "source_count", sources.size()));
+                fr.zeffut.multiview.telemetry.ErrorReporter.report("merge", t);
                 LOG.error("[MultiView] Merge failed", t);
                 Minecraft.getInstance().execute(() ->
                         source.sendError(Component.literal("[MultiView] Merge failed: " + t.getMessage())));
             }
         });
         return Command.SINGLE_SUCCESS;
+    }
+
+    /** Sum of source sizes (file size for zips, recursive for folders); -1 on error. */
+    private static long totalSize(List<Path> sources) {
+        try {
+            long total = 0;
+            for (Path s : sources) {
+                if (Files.isRegularFile(s)) {
+                    total += Files.size(s);
+                } else if (Files.isDirectory(s)) {
+                    try (Stream<Path> w = Files.walk(s)) {
+                        total += w.filter(Files::isRegularFile).mapToLong(p -> {
+                            try { return Files.size(p); } catch (Exception e) { return 0L; }
+                        }).sum();
+                    }
+                }
+            }
+            return total;
+        } catch (Exception e) {
+            return -1L;
+        }
     }
 }

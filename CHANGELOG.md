@@ -2,6 +2,14 @@
 
 All notable changes are listed here. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- Anonymous, opt-out telemetry (PostHog, EU) to guide development: merge metrics,
+  feature usage, versions, and sanitized error reports. Disable with `/mv telemetry off`
+  or `-Dmultiview.telemetry=false`. See the README "Telemetry & privacy" section.
+
 ## [0.4.0-beta.1] — 2026-05-19
 
 Audit-driven beta. Multi-agent audit pass surfaced 35 findings across security, correctness, cross-version compatibility, and merge algorithm; this release closes the two CRITICAL issues plus 10 HIGH-severity ones.
