@@ -67,7 +67,8 @@ public final class MultiViewMod implements ClientModInitializer {
             net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STOPPING
                     .register(client -> fr.zeffut.multiview.telemetry.Telemetry.shutdown());
 
-            // NOTE: the session heartbeat is wired in the next task (Task 11). Do not add it here.
+            // Periodic session heartbeat.
+            fr.zeffut.multiview.telemetry.HeartbeatScheduler.start();
         } catch (Throwable t) {
             LOGGER.warn("[MultiView] telemetry setup failed: {}", t.getMessage());
         }
