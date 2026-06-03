@@ -75,6 +75,9 @@ public final class MergeCommand {
 
     private static int execute(FabricClientCommandSource source,
                                List<String> sourceNames, String outputName) {
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_COMMAND_USED,
+                java.util.Map.of("command", "merge", "source_count", sourceNames.size()));
         Path replayRoot = com.moulberry.flashback.Flashback.getReplayFolder();
         Path replayRootReal;
         try {

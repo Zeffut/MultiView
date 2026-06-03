@@ -31,6 +31,9 @@ public final class InspectCommand {
     }
 
     private static int inspect(FabricClientCommandSource src, String replayName) {
+        fr.zeffut.multiview.telemetry.Telemetry.capture(
+                fr.zeffut.multiview.telemetry.EventNames.EVT_COMMAND_USED,
+                java.util.Map.of("command", "inspect"));
         Path replayRoot = com.moulberry.flashback.Flashback.getReplayFolder();
         Path replayFolder = replayRoot.resolve(replayName);
         try {
@@ -76,6 +79,15 @@ public final class InspectCommand {
             src.sendFeedback(Component.literal("Snapshot entries: " + stats[2]
                     + " / live: " + (stats[0] - stats[2])));
             MultiViewMod.LOGGER.info("[inspect] {} — histogram: {}", replayName, actionHistogram);
+            fr.zeffut.multiview.telemetry.Telemetry.capture(
+                    fr.zeffut.multiview.telemetry.EventNames.EVT_INSPECT_PERFORMED,
+                    java.util.Map.of(
+                            "ok", true,
+                            "entries", stats[0],
+                            "max_tick", stats[1],
+                            "snapshot_entries", stats[2],
+                            "segments", replay.segmentPaths().size(),
+                            "markers", replay.metadata().markers().size()));
             return Command.SINGLE_SUCCESS;
         } catch (IOException e) {
             MultiViewMod.LOGGER.error("Failed to inspect replay {}", replayName, e);
