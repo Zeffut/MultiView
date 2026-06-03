@@ -56,6 +56,8 @@ import java.util.concurrent.Executors;
  */
 public final class MergeUi {
 
+    public static final String UI_VARIANT = "classic";
+
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "multiview-merge-ui");
         t.setDaemon(true);
