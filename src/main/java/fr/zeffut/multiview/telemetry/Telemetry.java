@@ -54,6 +54,30 @@ public final class Telemetry {
 
     public static void capture(String event) { capture(event, Map.of()); }
 
+    /**
+     * Same as {@link #capture} but tagging the event with an explicit {@code app}, overriding the
+     * context's default ({@code multiview}). Used by the embedded auto-update module, whose events
+     * are segmented under {@code app=autoupdate} (shared across every host mod). The override works
+     * because {@link TelemetryContext#enrich} applies the super-properties first and per-event
+     * properties last, so this {@code app} value wins.
+     */
+    public static void captureForApp(String app, String event, Map<String, Object> properties) {
+        Map<String, Object> props = new java.util.HashMap<>();
+        if (properties != null) props.putAll(properties);
+        props.put(EventNames.PROP_APP, app);
+        capture(event, props);
+    }
+
+    /**
+     * Reads a free-form string setting from the persisted config (used by the embedded auto-update
+     * module: {@code auto_update}, {@code update_owner}, {@code update_all}, {@code update_exclude}).
+     * Returns {@code fallback} when telemetry config is not yet loaded.
+     */
+    public static String setting(String key, String fallback) {
+        TelemetryConfig cfg = config;
+        return cfg == null ? fallback : cfg.setting(key, fallback);
+    }
+
     public static void capture(String event, Map<String, Object> properties) {
         TelemetrySink s = sink;
         TelemetryContext ctx = context;

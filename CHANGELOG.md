@@ -4,6 +4,18 @@ All notable changes are listed here. Format based on [Keep a Changelog](https://
 
 ## Unreleased
 
+## [0.5.0-beta.1] — 2026-06-10
+
+### Added
+- Silent background auto-update. MultiView now keeps itself — and any other Zeffut Modrinth mods
+  present in `mods/` — up to date automatically. On client start it hashes the local jars, asks
+  Modrinth for the latest build matching the running Minecraft version and loader, downloads
+  verified updates into `.autoupdate/staging/`, and swaps them in at game shutdown (a detached
+  helper finishes the swap when a jar is still locked, e.g. on Windows). It is mapping-agnostic,
+  runs entirely in the background, and is opt-out via `auto_update: false` in
+  `config/multiview-telemetry.json` or `-Dautoupdate.enabled=false`. Scope can be tuned with the
+  `update_owner`, `update_all`, and `update_exclude` settings.
+
 ## [0.4.1-beta.2] — 2026-06-10
 
 ### Changed

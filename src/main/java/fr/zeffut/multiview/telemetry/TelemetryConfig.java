@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -22,6 +24,8 @@ public final class TelemetryConfig {
     // Serialised fields (Gson). Defaults apply when the file is absent.
     private boolean enabled = true;
     private String distinctId;
+    /** Free-form string settings, including the embedded auto-update module's options. */
+    private Map<String, String> settings;
 
     private transient Path file;
 
@@ -45,6 +49,12 @@ public final class TelemetryConfig {
             cfg.distinctId = UUID.randomUUID().toString();
             dirty = true;
         }
+        // Seed the embedded auto-update module's options so the generated file documents them.
+        if (cfg.settings == null) cfg.settings = new LinkedHashMap<>();
+        dirty |= cfg.settings.putIfAbsent("auto_update", "true") == null;
+        dirty |= cfg.settings.putIfAbsent("update_owner", "Zeffut") == null;
+        dirty |= cfg.settings.putIfAbsent("update_all", "false") == null;
+        dirty |= cfg.settings.putIfAbsent("update_exclude", "") == null;
         if (!Files.exists(file)) dirty = true;
         if (dirty) cfg.save();
         return cfg;
@@ -62,6 +72,11 @@ public final class TelemetryConfig {
 
     public boolean isEnabled() { return enabled; }
     public String getDistinctId() { return distinctId; }
+
+    /** Free-form mod settings (auto-update options live here). */
+    public String setting(String key, String fallback) {
+        return settings != null ? settings.getOrDefault(key, fallback) : fallback;
+    }
 
     public void setEnabled(boolean value) { this.enabled = value; save(); }
 }

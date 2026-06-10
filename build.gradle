@@ -21,6 +21,21 @@ if (project.findProperty("no_intermediate") == "true") {
     loom { noIntermediateMappings() }
 }
 
+// Forward -Pautoupdate.* Gradle properties to the dev client as -D system properties, so the
+// embedded auto-update module can be exercised in-game (e.g. -Pautoupdate.mods.dir=<folder of jars>
+// points the scanner at a test folder without loading those jars as mods).
+loom {
+    runs {
+        client {
+            project.properties.each { k, v ->
+                if (k.toString().startsWith("autoupdate.")) {
+                    vmArg("-D${k}=${v}")
+                }
+            }
+        }
+    }
+}
+
 repositories {
     mavenCentral()
 }
@@ -63,6 +78,15 @@ dependencies {
         modLocalRuntime files(flashbackJar)
     } else {
         logger.warn("Flashback jar not found at ${flashbackJar.path} — compiling without Flashback API bindings.")
+    }
+
+    // Dev-runtime only (NOT bundled): Flashback's JiJ companion libs. Loom does not reliably expose
+    // Flashback's nested mixin plugins (mixinconstraints / MixinSquared) when Flashback is consumed
+    // as a plain file() dependency, which intermittently crashes `runClient` during mixin apply.
+    // Adding them as local-runtime mods makes the dev client boot deterministically. They are never
+    // shipped (shadowJar only bundles the `shadow` config). Drop the jars into libs/dev-jij/.
+    fileTree(dir: "libs/dev-jij", include: "*.jar").each { jij ->
+        modLocalRuntime files(jij)
     }
 
     // PostHog telemetry SDK — shaded & relocated into the mod jar (see shadowJar below).

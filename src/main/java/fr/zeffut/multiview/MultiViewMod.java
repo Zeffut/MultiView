@@ -35,6 +35,14 @@ public final class MultiViewMod implements ClientModInitializer {
         }
 
         initTelemetry(uiCapability);
+
+        // Silent background auto-update of Zeffut's Modrinth mods present in mods/ (this mod
+        // included). Started after telemetry init so its upd_* events can be reported.
+        try {
+            fr.zeffut.multiview.update.UpdateService.start();
+        } catch (Throwable t) {
+            LOGGER.warn("[MultiView] auto-update start failed: {}", t.getMessage());
+        }
     }
 
     /** "modern" or "classic" depending on which MergeUi source root was compiled in. */
