@@ -178,7 +178,9 @@ public final class MergeUi {
                 // Skip rows with no part in the viewport; the scissor clips the partial ones.
                 if (!MergeUiLayout.rowIntersectsViewport(rowTop, rowBottom, list.getY(), list.getBottom())) continue;
 
-                int cbX = list.getRowLeft() + list.getRowWidth() - CB_SIZE - CB_INSET_X;
+                // Left edge of the row (over the thumbnail corner), well before the text starts
+            // (~rowLeft+35) so the checkbox never covers the replay name/time.
+            int cbX = list.getRowLeft() + CB_INSET_X;
                 int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
 
                 boolean checked = state.checkedPaths.contains(summary.getPath());
@@ -238,7 +240,9 @@ public final class MergeUi {
             int rowBottom = list.getRowBottom(i);
             if (!MergeUiLayout.rowIntersectsViewport(rowTop, rowBottom, list.getY(), list.getBottom())) continue;
 
-            int cbX = list.getRowLeft() + list.getRowWidth() - CB_SIZE - CB_INSET_X;
+            // Left edge of the row (over the thumbnail corner), well before the text starts
+            // (~rowLeft+35) so the checkbox never covers the replay name/time.
+            int cbX = list.getRowLeft() + CB_INSET_X;
             int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
 
             // Only the visible (in-viewport) part of the checkbox is clickable, so a click on the
