@@ -96,4 +96,21 @@ class MergeUiLayoutTest {
         assertTrue(MergeUiLayout.rowClicked(120, 198, rowLeft, rowWidth, sTop, sBottom, top, bottom), "visible part");
         assertFalse(MergeUiLayout.rowClicked(120, 205, rowLeft, rowWidth, sTop, sBottom, top, bottom), "below viewport");
     }
+
+    @Test
+    void allWindowsOverlapDetectsDifferentMoments() {
+        // Same live session: overlapping recording windows → mergeable.
+        assertTrue(MergeUiLayout.allWindowsOverlap(new long[][]{
+                {1000, 5000}, {2000, 6000}, {1500, 4000}}));
+        // One replay from a different day → disjoint → not mergeable.
+        assertFalse(MergeUiLayout.allWindowsOverlap(new long[][]{
+                {1000, 5000}, {2000, 6000}, {90000, 95000}}));
+        // Two windows that merely touch at an endpoint count as disjoint.
+        assertFalse(MergeUiLayout.allWindowsOverlap(new long[][]{{1000, 5000}, {5000, 9000}}));
+        // Nested window still overlaps.
+        assertTrue(MergeUiLayout.allWindowsOverlap(new long[][]{{1000, 9000}, {3000, 4000}}));
+        // Fewer than two windows: nothing to contradict.
+        assertTrue(MergeUiLayout.allWindowsOverlap(new long[][]{{1000, 5000}}));
+        assertTrue(MergeUiLayout.allWindowsOverlap(new long[][]{}));
+    }
 }

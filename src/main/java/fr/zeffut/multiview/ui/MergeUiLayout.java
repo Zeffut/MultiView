@@ -60,4 +60,21 @@ public final class MergeUiLayout {
                 && mouseY >= rowTop && mouseY <= rowBottom
                 && mouseY >= listTop && mouseY <= listBottom;
     }
+
+    /**
+     * True if every pair of recording windows overlaps in time — i.e. the replays were recorded
+     * during the same real-world moment (a precondition for a meaningful merge). Each window is
+     * {@code [startMs, endMs]}. With fewer than two windows there is nothing to contradict, so the
+     * result is {@code true} (the caller falls back to the gameTime check). Half-open intervals:
+     * two windows that merely touch at an endpoint count as disjoint.
+     */
+    public static boolean allWindowsOverlap(long[][] windows) {
+        for (int i = 0; i < windows.length; i++) {
+            for (int j = i + 1; j < windows.length; j++) {
+                long[] a = windows[i], b = windows[j];
+                if (a[1] <= b[0] || b[1] <= a[0]) return false;
+            }
+        }
+        return true;
+    }
 }
