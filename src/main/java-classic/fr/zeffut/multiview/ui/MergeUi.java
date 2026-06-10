@@ -333,14 +333,18 @@ public final class MergeUi {
 
         Component countMsg = Component.translatable("multiview.button.merge_selected.count", n);
 
-        // Same-moment guard (cheap, no I/O): the replays must have been recorded during overlapping
-        // real-world windows. Replays from different sessions/days don't overlap here, which the
-        // gameTime probe can't reliably tell apart — so this is what greys the button out.
+        // Same-moment guard (cheap, no I/O): an empty replay (0s duration) can't be a merge source,
+        // and the non-empty replays must have been recorded during overlapping real-world windows.
+        // Replays from different sessions/days don't overlap here, which the gameTime probe can't
+        // reliably tell apart — so this is what greys the button out.
+        boolean anyEmpty = state.checkedPaths.stream()
+                .map(state.recWindows::get)
+                .anyMatch(w -> w != null && w[1] <= w[0]);
         long[][] windows = state.checkedPaths.stream()
                 .map(state.recWindows::get)
                 .filter(w -> w != null && w[1] > w[0])
                 .toArray(long[][]::new);
-        if (windows.length >= 2 && !MergeUiLayout.allWindowsOverlap(windows)) {
+        if (anyEmpty || (windows.length >= 2 && !MergeUiLayout.allWindowsOverlap(windows))) {
             fr.zeffut.multiview.telemetry.Telemetry.capture(
                     fr.zeffut.multiview.telemetry.EventNames.EVT_OVERLAP_VALIDATION_FAILED,
                     java.util.Map.of("selected_count", n, "reason", "recording_time"));
