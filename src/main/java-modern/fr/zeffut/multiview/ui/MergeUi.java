@@ -147,31 +147,36 @@ public final class MergeUi {
         ReplaySelectionList list = getSelectionList(srs);
         if (list == null) return;
 
-        List<ReplaySelectionEntry> children = list.children();
-        for (int i = 0; i < children.size(); i++) {
-            ReplaySelectionEntry entry = children.get(i);
-            if (!(entry instanceof ReplaySelectionEntry.ReplayListEntry rle)) continue;
+        // Clip to the list's vertical viewport so a checkbox on a partially-scrolled row slides
+        // *under* the top/bottom fade overlays (like the rows themselves) instead of popping out
+        // the instant it touches the edge.
+        context.enableScissor(list.getRowLeft(), list.getY(),
+                list.getRowLeft() + list.getRowWidth(), list.getBottom());
+        try {
+            List<ReplaySelectionEntry> children = list.children();
+            for (int i = 0; i < children.size(); i++) {
+                ReplaySelectionEntry entry = children.get(i);
+                if (!(entry instanceof ReplaySelectionEntry.ReplayListEntry rle)) continue;
 
-            ReplaySummary summary = getSummaryFromEntry(rle);
-            if (summary == null) continue;
+                ReplaySummary summary = getSummaryFromEntry(rle);
+                if (summary == null) continue;
 
-            int rowTop = list.getRowTop(i);
-            int rowBottom = list.getRowBottom(i);
+                int rowTop = list.getRowTop(i);
+                int rowBottom = list.getRowBottom(i);
+                // Skip rows with no part in the viewport; the scissor clips the partial ones.
+                if (!MergeUiLayout.rowIntersectsViewport(rowTop, rowBottom, list.getY(), list.getBottom())) continue;
 
-            int cbX = list.getRowLeft() + list.getRowWidth() - CB_SIZE - CB_INSET_X;
-            int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
+                int cbX = list.getRowLeft() + list.getRowWidth() - CB_SIZE - CB_INSET_X;
+                int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
 
-            // Only draw when the whole checkbox is inside the list's vertical viewport (shared,
-            // unit-tested predicate): Flashback scissor-clips its rows but this afterExtract pass is
-            // not, so a partially-scrolled row would otherwise bleed its checkbox over the
-            // list's top/bottom fade overlays.
-            if (!MergeUiLayout.checkboxVisible(cbY, CB_SIZE, list.getY(), list.getBottom())) continue;
+                boolean checked = state.checkedPaths.contains(summary.getPath());
+                boolean hovered = mouseX >= cbX && mouseX <= cbX + CB_SIZE
+                        && mouseY >= cbY && mouseY <= cbY + CB_SIZE;
 
-            boolean checked = state.checkedPaths.contains(summary.getPath());
-            boolean hovered = mouseX >= cbX && mouseX <= cbX + CB_SIZE
-                    && mouseY >= cbY && mouseY <= cbY + CB_SIZE;
-
-            drawCheckbox(context, cbX, cbY, checked, hovered);
+                drawCheckbox(context, cbX, cbY, checked, hovered);
+            }
+        } finally {
+            context.disableScissor();
         }
     }
 
@@ -200,16 +205,15 @@ public final class MergeUi {
 
             int rowTop = list.getRowTop(i);
             int rowBottom = list.getRowBottom(i);
+            if (!MergeUiLayout.rowIntersectsViewport(rowTop, rowBottom, list.getY(), list.getBottom())) continue;
 
             int cbX = list.getRowLeft() + list.getRowWidth() - CB_SIZE - CB_INSET_X;
             int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
 
-            // Match the render cull: only a fully-visible checkbox is clickable, so clicks in the
-            // top/bottom overlay bands don't toggle a half-scrolled row.
-            if (!MergeUiLayout.checkboxVisible(cbY, CB_SIZE, list.getY(), list.getBottom())) continue;
-
+            // Only the visible (in-viewport) part of the checkbox is clickable, so a click on the
+            // sliver hidden under the top/bottom overlay doesn't toggle a half-scrolled row.
             if (mouseX >= cbX - 1 && mouseX <= cbX + CB_SIZE + 1
-                    && mouseY >= cbY - 1 && mouseY <= cbY + CB_SIZE + 1) {
+                    && MergeUiLayout.checkboxClickable(mouseY, cbY, CB_SIZE, list.getY(), list.getBottom())) {
                 ReplaySummary summary = getSummaryFromEntry(rle);
                 if (summary == null) return true;
 

@@ -41,11 +41,21 @@ public final class MergeUiLayout {
     }
 
     /**
-     * True only when the whole checkbox is inside the list's vertical viewport. Flashback
-     * scissor-clips its rows but our render pass is not clipped, so this prevents a
-     * partially-scrolled row's checkbox from bleeding over the list's top/bottom fade overlays.
+     * True if any part of the row falls within the list's vertical viewport — i.e. its checkbox is
+     * worth drawing. Partially-visible checkboxes are clipped by a scissor to the viewport so they
+     * slide under the top/bottom fade overlays rather than popping in/out at the edge.
      */
-    public static boolean checkboxVisible(int cbY, int cbSize, int listTop, int listBottom) {
-        return cbY >= listTop && cbY + cbSize <= listBottom;
+    public static boolean rowIntersectsViewport(int rowTop, int rowBottom, int listTop, int listBottom) {
+        return rowBottom > listTop && rowTop < listBottom;
+    }
+
+    /**
+     * True if a click at {@code mouseY} lands on the *visible* part of the checkbox: inside the
+     * checkbox's vertical span (±1 for the border) AND inside the list viewport, so a click on the
+     * sliver hidden under an overlay doesn't toggle a half-scrolled row.
+     */
+    public static boolean checkboxClickable(double mouseY, int cbY, int cbSize, int listTop, int listBottom) {
+        return mouseY >= cbY - 1 && mouseY <= cbY + cbSize + 1
+                && mouseY >= listTop && mouseY <= listBottom;
     }
 }

@@ -65,19 +65,31 @@ class MergeUiLayoutTest {
     }
 
     @Test
-    void checkboxVisibleOnlyWhenFullyInsideViewport() {
+    void rowDrawnWhenAnyPartIntersectsViewport() {
+        int top = 40, bottom = 200;
+        // Fully inside, and straddling each edge → drawn (scissor clips the overflow).
+        assertTrue(MergeUiLayout.rowIntersectsViewport(100, 120, top, bottom));
+        assertTrue(MergeUiLayout.rowIntersectsViewport(top - 8, top + 8, top, bottom), "straddling top");
+        assertTrue(MergeUiLayout.rowIntersectsViewport(bottom - 8, bottom + 8, top, bottom), "straddling bottom");
+        // Fully above / below, and flush against the edge → skipped.
+        assertFalse(MergeUiLayout.rowIntersectsViewport(0, top, top, bottom), "row ends exactly at top");
+        assertFalse(MergeUiLayout.rowIntersectsViewport(bottom, bottom + 20, top, bottom), "row starts exactly at bottom");
+        assertFalse(MergeUiLayout.rowIntersectsViewport(0, 10, top, bottom));
+        assertFalse(MergeUiLayout.rowIntersectsViewport(bottom + 50, bottom + 70, top, bottom));
+    }
+
+    @Test
+    void onlyVisiblePartOfCheckboxIsClickable() {
         int top = 40, bottom = 200, size = 10;
-        // Fully inside
-        assertTrue(MergeUiLayout.checkboxVisible(100, size, top, bottom));
-        // Flush against the top / bottom edges (still fully inside)
-        assertTrue(MergeUiLayout.checkboxVisible(top, size, top, bottom));
-        assertTrue(MergeUiLayout.checkboxVisible(bottom - size, size, top, bottom));
-        // One pixel past the top → hidden (the old row-based cull wrongly drew these)
-        assertFalse(MergeUiLayout.checkboxVisible(top - 1, size, top, bottom));
-        // One pixel past the bottom → hidden
-        assertFalse(MergeUiLayout.checkboxVisible(bottom - size + 1, size, top, bottom));
-        // Far above / below
-        assertFalse(MergeUiLayout.checkboxVisible(0, size, top, bottom));
-        assertFalse(MergeUiLayout.checkboxVisible(bottom + 50, size, top, bottom));
+        // Checkbox fully inside: a click in its span toggles.
+        assertTrue(MergeUiLayout.checkboxClickable(105, 100, size, top, bottom));
+        // Checkbox straddling the bottom edge (cbY=195 → spans 195..205, viewport ends at 200):
+        assertTrue(MergeUiLayout.checkboxClickable(198, 195, size, top, bottom), "visible part clickable");
+        assertFalse(MergeUiLayout.checkboxClickable(204, 195, size, top, bottom), "hidden sliver below the overlay not clickable");
+        // Checkbox straddling the top edge (cbY=37 → spans 37..47, viewport starts at 40):
+        assertTrue(MergeUiLayout.checkboxClickable(44, 37, size, top, bottom), "visible part clickable");
+        assertFalse(MergeUiLayout.checkboxClickable(38, 37, size, top, bottom), "hidden sliver above the overlay not clickable");
+        // A click well outside the checkbox span is never clickable.
+        assertFalse(MergeUiLayout.checkboxClickable(150, 100, size, top, bottom));
     }
 }
