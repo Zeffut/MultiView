@@ -115,12 +115,18 @@ public final class MergeUi {
 
         SelectionState state = new SelectionState();
 
-        // --- Layout constants ------------------------------------------------
+        // --- Layout ----------------------------------------------------------
+        // Flashback's SelectReplayScreen puts its centred control row (search box + sort) at
+        // y=22, spanning [width/2-128, width/2+151]. We sit in the top-right corner ABOVE that
+        // row (bottom kept ≤ 22) and shrink the width on narrow windows so the button never
+        // overlaps either the control row or the centred title.
         int btnH = 20;
-        int mergeW = 130;
         int margin = 4;
+        int mergeY = 1;                                   // 1 + 20 = 21 ≤ 22 (clears the control row)
+        // Stay in the right half, clear of the centred title (~60px right of centre is plenty).
+        int avail = scaledWidth - margin - (scaledWidth / 2 + 60);
+        int mergeW = Math.max(72, Math.min(130, avail));
         int mergeX = scaledWidth - mergeW - margin;
-        int mergeY = margin;
 
         // Merge button — initially disabled
         Button mergeBtn = Button.builder(
@@ -172,11 +178,14 @@ public final class MergeUi {
             int rowTop = list.getRowTop(i);
             int rowBottom = list.getRowBottom(i);
 
-            // Skip entries that are fully outside the visible area
-            if (rowBottom < list.getY() || rowTop > list.getBottom()) continue;
-
             int cbX = list.getRowLeft() + list.getRowWidth() - CB_SIZE - CB_INSET_X;
             int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
+
+            // Only draw when the whole checkbox is inside the list's vertical viewport.
+            // Flashback scissor-clips its rows, but this afterRender pass is not clipped, so a
+            // partially-scrolled row would otherwise bleed its checkbox over the list's
+            // top/bottom fade overlays.
+            if (cbY < list.getY() || cbY + CB_SIZE > list.getBottom()) continue;
 
             boolean checked = state.checkedPaths.contains(summary.getPath());
             boolean hovered = mouseX >= cbX && mouseX <= cbX + CB_SIZE
@@ -231,11 +240,12 @@ public final class MergeUi {
             int rowTop = list.getRowTop(i);
             int rowBottom = list.getRowBottom(i);
 
-            // Skip entries outside the visible clip area
-            if (rowBottom < list.getY() || rowTop > list.getBottom()) continue;
-
             int cbX = list.getRowLeft() + list.getRowWidth() - CB_SIZE - CB_INSET_X;
             int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
+
+            // Match the render cull: only a fully-visible checkbox is clickable, so clicks in the
+            // top/bottom overlay bands don't toggle a half-scrolled row.
+            if (cbY < list.getY() || cbY + CB_SIZE > list.getBottom()) continue;
 
             if (mouseX >= cbX - 1 && mouseX <= cbX + CB_SIZE + 1
                     && mouseY >= cbY - 1 && mouseY <= cbY + CB_SIZE + 1) {
