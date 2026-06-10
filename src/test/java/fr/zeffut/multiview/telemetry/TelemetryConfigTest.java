@@ -12,7 +12,6 @@ class TelemetryConfigTest {
         Path file = dir.resolve("multiview-telemetry.json");
         TelemetryConfig cfg = TelemetryConfig.load(file);
         assertTrue(cfg.isEnabled());
-        assertFalse(cfg.isFirstRunNotified());
         assertNotNull(cfg.getDistinctId());
         assertFalse(cfg.getDistinctId().isBlank());
         assertTrue(Files.exists(file), "config should be written on first load");
@@ -32,13 +31,5 @@ class TelemetryConfigTest {
         TelemetryConfig cfg = TelemetryConfig.load(file);
         cfg.setEnabled(false);
         assertFalse(TelemetryConfig.load(file).isEnabled());
-    }
-
-    @Test
-    void markNotifiedPersists(@TempDir Path dir) {
-        Path file = dir.resolve("multiview-telemetry.json");
-        TelemetryConfig cfg = TelemetryConfig.load(file);
-        cfg.markFirstRunNotified();
-        assertTrue(TelemetryConfig.load(file).isFirstRunNotified());
     }
 }

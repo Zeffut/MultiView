@@ -22,7 +22,6 @@ public final class TelemetryConfig {
     // Serialised fields (Gson). Defaults apply when the file is absent.
     private boolean enabled = true;
     private String distinctId;
-    private boolean firstRunNotified = false;
 
     private transient Path file;
 
@@ -63,8 +62,6 @@ public final class TelemetryConfig {
 
     public boolean isEnabled() { return enabled; }
     public String getDistinctId() { return distinctId; }
-    public boolean isFirstRunNotified() { return firstRunNotified; }
 
     public void setEnabled(boolean value) { this.enabled = value; save(); }
-    public void markFirstRunNotified() { this.firstRunNotified = true; save(); }
 }

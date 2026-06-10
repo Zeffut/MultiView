@@ -62,8 +62,6 @@ public final class MultiViewMod implements ClientModInitializer {
                     fr.zeffut.multiview.telemetry.EventNames.EVT_MOD_LOADED,
                     java.util.Map.of("flashback_present", flashbackPresent));
 
-            maybeShowFirstRunNotice(configFile);
-
             net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STOPPING
                     .register(client -> fr.zeffut.multiview.telemetry.Telemetry.shutdown());
 
@@ -72,31 +70,5 @@ public final class MultiViewMod implements ClientModInitializer {
         } catch (Throwable t) {
             LOGGER.warn("[MultiView] telemetry setup failed: {}", t.getMessage());
         }
-    }
-
-    private void maybeShowFirstRunNotice(java.nio.file.Path configFile) {
-        fr.zeffut.multiview.telemetry.TelemetryConfig cfg =
-                fr.zeffut.multiview.telemetry.TelemetryConfig.load(configFile);
-        if (cfg.isFirstRunNotified()) return;
-        final boolean[] shown = {false};
-        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK
-                .register(client -> {
-                    if (shown[0] || client.player == null) return;
-                    // Show the notice via the per-version ui.ChatNotice helper, invoked
-                    // reflectively to keep this shared file UI-agnostic (the chat API diverges
-                    // across MC versions). Attempt once per session regardless of outcome; only
-                    // persist the "notified" flag on success so a transient failure retries next launch.
-                    shown[0] = true;
-                    try {
-                        Class.forName("fr.zeffut.multiview.ui.ChatNotice")
-                                .getMethod("show", net.minecraft.network.chat.Component.class)
-                                .invoke(null,
-                                        fr.zeffut.multiview.telemetry.command.TelemetryCommand.firstRunNotice());
-                        cfg.markFirstRunNotified();
-                    } catch (Throwable t) {
-                        LOGGER.warn("[MultiView] could not show first-run telemetry notice: {}",
-                                t.getMessage());
-                    }
-                });
     }
 }

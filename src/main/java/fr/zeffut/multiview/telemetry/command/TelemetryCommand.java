@@ -36,10 +36,4 @@ public final class TelemetryCommand {
                 Telemetry.isEnabled() ? "ON" : "OFF", Telemetry.distinctId())));
         return Command.SINGLE_SUCCESS;
     }
-
-    /** One-time chat notice on first run. Caller decides when to show + persist. */
-    public static Component firstRunNotice() {
-        return Component.literal("[MultiView] Sends anonymous usage stats to improve the mod. "
-                + "Run \"/mv telemetry off\" to disable.");
-    }
 }
