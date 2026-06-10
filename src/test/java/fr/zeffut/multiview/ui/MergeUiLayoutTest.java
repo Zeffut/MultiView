@@ -79,17 +79,21 @@ class MergeUiLayoutTest {
     }
 
     @Test
-    void onlyVisiblePartOfCheckboxIsClickable() {
-        int top = 40, bottom = 200, size = 10;
-        // Checkbox fully inside: a click in its span toggles.
-        assertTrue(MergeUiLayout.checkboxClickable(105, 100, size, top, bottom));
-        // Checkbox straddling the bottom edge (cbY=195 → spans 195..205, viewport ends at 200):
-        assertTrue(MergeUiLayout.checkboxClickable(198, 195, size, top, bottom), "visible part clickable");
-        assertFalse(MergeUiLayout.checkboxClickable(204, 195, size, top, bottom), "hidden sliver below the overlay not clickable");
-        // Checkbox straddling the top edge (cbY=37 → spans 37..47, viewport starts at 40):
-        assertTrue(MergeUiLayout.checkboxClickable(44, 37, size, top, bottom), "visible part clickable");
-        assertFalse(MergeUiLayout.checkboxClickable(38, 37, size, top, bottom), "hidden sliver above the overlay not clickable");
-        // A click well outside the checkbox span is never clickable.
-        assertFalse(MergeUiLayout.checkboxClickable(150, 100, size, top, bottom));
+    void rowClickedRequiresRowRectAndViewport() {
+        int top = 40, bottom = 200;           // list viewport
+        int rowLeft = 30, rowWidth = 220;     // a row spanning x 30..250
+        int rowTop = 100, rowBottom = 118;    // fully inside the viewport
+        // Inside the row rect and viewport → clicked.
+        assertTrue(MergeUiLayout.rowClicked(120, 109, rowLeft, rowWidth, rowTop, rowBottom, top, bottom));
+        // Left of / right of the row → not clicked.
+        assertFalse(MergeUiLayout.rowClicked(20, 109, rowLeft, rowWidth, rowTop, rowBottom, top, bottom));
+        assertFalse(MergeUiLayout.rowClicked(260, 109, rowLeft, rowWidth, rowTop, rowBottom, top, bottom));
+        // Above / below the row → not clicked.
+        assertFalse(MergeUiLayout.rowClicked(120, 90, rowLeft, rowWidth, rowTop, rowBottom, top, bottom));
+        assertFalse(MergeUiLayout.rowClicked(120, 130, rowLeft, rowWidth, rowTop, rowBottom, top, bottom));
+        // A row straddling the bottom edge: a click on its part below the viewport is rejected.
+        int sTop = 195, sBottom = 213;        // straddles bottom=200
+        assertTrue(MergeUiLayout.rowClicked(120, 198, rowLeft, rowWidth, sTop, sBottom, top, bottom), "visible part");
+        assertFalse(MergeUiLayout.rowClicked(120, 205, rowLeft, rowWidth, sTop, sBottom, top, bottom), "below viewport");
     }
 }

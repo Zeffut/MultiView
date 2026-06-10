@@ -59,19 +59,27 @@ public final class MergeUi {
     private static final DateTimeFormatter TS_FMT =
             DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
 
-    private static final int CB_SIZE = 10;
-    private static final int CB_INSET_X = 2;
+    /** Max gap (ms) between two clicks on the same row to count as a double-click (open). */
+    private static final long DOUBLE_CLICK_MS = 250L;
+    /** Translucent fill painted over a selected row (kept low-alpha so the name/time stay readable). */
+    private static final int SELECT_FILL = 0x3328A0FF;
+    /** Opaque 1px border drawn around a selected row. */
+    private static final int SELECT_BORDER = 0xFF55AAFF;
 
     private MergeUi() {}
 
     public static void register() {
         ScreenEvents.AFTER_INIT.register(MergeUi::onAfterInit);
-        MultiViewMod.LOGGER.info("[MultiView] MergeUi registered (Phase 5 — per-replay checkboxes, MC 26.1+ variant).");
+        MultiViewMod.LOGGER.info("[MultiView] MergeUi registered (multi-select row merge, MC 26.1+ variant).");
     }
 
     private static final class SelectionState {
         final Set<Path> checkedPaths = new LinkedHashSet<>();
         Button mergeButton = null;
+
+        /** Last clicked row + time, for double-click (open) detection. */
+        Path lastClickPath = null;
+        long lastClickMs = 0L;
     }
 
     private static void onAfterInit(Minecraft client, Screen screen, int scaledWidth, int scaledHeight) {
@@ -97,14 +105,14 @@ public final class MergeUi {
         fr.zeffut.multiview.telemetry.Telemetry.capture(
                 fr.zeffut.multiview.telemetry.EventNames.EVT_UI_OPENED);
 
-        // Draw checkboxes during the extract-render-state phase (post-26.1 pipeline).
+        // Draw selection highlights during the extract-render-state phase (post-26.1 pipeline).
         ScreenEvents.afterExtract(screen).register((s, context, mouseX, mouseY, delta) ->
-                drawCheckboxes(state, srs, context, mouseX, mouseY));
+                renderSelection(state, srs, context));
 
-        // Mouse click interception — the 26.1 callback receives a MouseButtonEvent
-        // whose accessors are .x() / .y() / .button(), matching the classic call.
+        // Intercept row clicks to drive the multi-selection. The 26.1 callback receives a
+        // MouseButtonEvent whose accessors are .x() / .y() / .button().
         ScreenMouseEvents.allowMouseClick(screen).register((s, event) ->
-                handleMouseClick(state, srs, event.x(), event.y(), event.button()));
+                handleRowClick(state, srs, event.x(), event.y(), event.button()));
 
         ScreenEvents.remove(screen).register(s -> {
             state.checkedPaths.clear();
@@ -142,59 +150,52 @@ public final class MergeUi {
                 button.getClass().getName());
     }
 
-    private static void drawCheckboxes(SelectionState state, SelectReplayScreen srs,
-                                        GuiGraphicsExtractor context, int mouseX, int mouseY) {
+    private static void renderSelection(SelectionState state, SelectReplayScreen srs,
+                                        GuiGraphicsExtractor context) {
+        if (state.checkedPaths.isEmpty()) return;
         ReplaySelectionList list = getSelectionList(srs);
         if (list == null) return;
 
-        // Clip to the list's vertical viewport so a checkbox on a partially-scrolled row slides
-        // *under* the top/bottom fade overlays (like the rows themselves) instead of popping out
-        // the instant it touches the edge.
+        // When exactly one row is selected, Flashback's native selection draws it; skip ours so it
+        // looks fully native. With two or more, the native selection is cleared and we draw all.
+        ReplaySelectionEntry nativeSelected = list.getSelected();
+
+        // Clip to the list viewport so highlights slide under the top/bottom fade overlays.
         context.enableScissor(list.getRowLeft(), list.getY(),
                 list.getRowLeft() + list.getRowWidth(), list.getBottom());
         try {
             List<ReplaySelectionEntry> children = list.children();
             for (int i = 0; i < children.size(); i++) {
                 ReplaySelectionEntry entry = children.get(i);
+                if (entry == nativeSelected) continue;
                 if (!(entry instanceof ReplaySelectionEntry.ReplayListEntry rle)) continue;
 
                 ReplaySummary summary = getSummaryFromEntry(rle);
-                if (summary == null) continue;
+                if (summary == null || !state.checkedPaths.contains(summary.getPath())) continue;
 
                 int rowTop = list.getRowTop(i);
                 int rowBottom = list.getRowBottom(i);
-                // Skip rows with no part in the viewport; the scissor clips the partial ones.
                 if (!MergeUiLayout.rowIntersectsViewport(rowTop, rowBottom, list.getY(), list.getBottom())) continue;
 
-                // Left edge of the row (over the thumbnail corner), well before the text starts
-            // (~rowLeft+35) so the checkbox never covers the replay name/time.
-            int cbX = list.getRowLeft() + CB_INSET_X;
-                int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
-
-                boolean checked = state.checkedPaths.contains(summary.getPath());
-                boolean hovered = mouseX >= cbX && mouseX <= cbX + CB_SIZE
-                        && mouseY >= cbY && mouseY <= cbY + CB_SIZE;
-
-                drawCheckbox(context, cbX, cbY, checked, hovered);
+                drawHighlight(context, list.getRowLeft(), rowTop,
+                        list.getRowLeft() + list.getRowWidth(), rowBottom);
             }
         } finally {
             context.disableScissor();
         }
     }
 
-    private static void drawCheckbox(GuiGraphicsExtractor context, int x, int y, boolean checked, boolean hovered) {
-        int borderColor = hovered ? 0xFFFFFFFF : 0xFFAAAAAA;
-        context.fill(x - 1, y - 1, x + CB_SIZE + 1, y + CB_SIZE + 1, borderColor);
-
-        if (checked) {
-            context.fill(x, y, x + CB_SIZE, y + CB_SIZE, 0xFF4CAF50);
-        } else {
-            context.fill(x, y, x + CB_SIZE, y + CB_SIZE, 0xFF2A2A2A);
-        }
+    /** Highlights a selected row: a translucent fill (text stays readable) plus a 1px border. */
+    private static void drawHighlight(GuiGraphicsExtractor context, int x0, int y0, int x1, int y1) {
+        context.fill(x0, y0, x1, y1, SELECT_FILL);
+        context.fill(x0, y0, x1, y0 + 1, SELECT_BORDER);       // top
+        context.fill(x0, y1 - 1, x1, y1, SELECT_BORDER);       // bottom
+        context.fill(x0, y0, x0 + 1, y1, SELECT_BORDER);       // left
+        context.fill(x1 - 1, y0, x1, y1, SELECT_BORDER);       // right
     }
 
-    private static boolean handleMouseClick(SelectionState state, SelectReplayScreen srs,
-                                             double mouseX, double mouseY, int button) {
+    private static boolean handleRowClick(SelectionState state, SelectReplayScreen srs,
+                                          double mouseX, double mouseY, int button) {
         if (button != 0) return true;
 
         ReplaySelectionList list = getSelectionList(srs);
@@ -207,31 +208,57 @@ public final class MergeUi {
 
             int rowTop = list.getRowTop(i);
             int rowBottom = list.getRowBottom(i);
-            if (!MergeUiLayout.rowIntersectsViewport(rowTop, rowBottom, list.getY(), list.getBottom())) continue;
+            if (!MergeUiLayout.rowClicked(mouseX, mouseY, list.getRowLeft(), list.getRowWidth(),
+                    rowTop, rowBottom, list.getY(), list.getBottom())) continue;
 
-            // Left edge of the row (over the thumbnail corner), well before the text starts
-            // (~rowLeft+35) so the checkbox never covers the replay name/time.
-            int cbX = list.getRowLeft() + CB_INSET_X;
-            int cbY = rowTop + (rowBottom - rowTop) / 2 - CB_SIZE / 2;
+            ReplaySummary summary = getSummaryFromEntry(rle);
+            if (summary == null) return true;
+            Path path = summary.getPath();
 
-            // Only the visible (in-viewport) part of the checkbox is clickable, so a click on the
-            // sliver hidden under the top/bottom overlay doesn't toggle a half-scrolled row.
-            if (mouseX >= cbX - 1 && mouseX <= cbX + CB_SIZE + 1
-                    && MergeUiLayout.checkboxClickable(mouseY, cbY, CB_SIZE, list.getY(), list.getBottom())) {
-                ReplaySummary summary = getSummaryFromEntry(rle);
-                if (summary == null) return true;
-
-                Path path = summary.getPath();
-                if (state.checkedPaths.contains(path)) {
-                    state.checkedPaths.remove(path);
-                } else {
-                    state.checkedPaths.add(path);
-                }
-                updateMergeButton(state);
+            long now = System.currentTimeMillis();
+            if (path.equals(state.lastClickPath) && now - state.lastClickMs <= DOUBLE_CLICK_MS) {
+                // Double-click on the same row → open it (Flashback behaviour, preserved).
+                state.lastClickPath = null;
+                rle.openReplay();
                 return false;
             }
+            state.lastClickPath = path;
+            state.lastClickMs = now;
+
+            // Toggle this row in the merge selection.
+            if (!state.checkedPaths.remove(path)) state.checkedPaths.add(path);
+            syncNativeSelection(state, srs, list);
+            updateMergeButton(state);
+            return false; // consume — we own row selection
         }
         return true;
+    }
+
+    /**
+     * Mirrors the merge selection into Flashback's native single-selection: when exactly one row is
+     * selected, select it natively so Open/Edit/Delete target it; otherwise clear it. Best-effort —
+     * never throws into the click handler.
+     */
+    private static void syncNativeSelection(SelectionState state, SelectReplayScreen srs,
+                                            ReplaySelectionList list) {
+        try {
+            if (state.checkedPaths.size() == 1) {
+                Path only = state.checkedPaths.iterator().next();
+                for (ReplaySelectionEntry entry : list.children()) {
+                    if (!(entry instanceof ReplaySelectionEntry.ReplayListEntry rle)) continue;
+                    ReplaySummary summary = getSummaryFromEntry(rle);
+                    if (summary != null && only.equals(summary.getPath())) {
+                        list.setSelected(entry);
+                        srs.updateButtonStatus(summary);
+                        return;
+                    }
+                }
+            }
+            list.setSelected(null);
+            srs.updateButtonStatus(null);
+        } catch (Throwable t) {
+            MultiViewMod.LOGGER.debug("[MultiView] could not sync native selection: {}", t.getMessage());
+        }
     }
 
     /**

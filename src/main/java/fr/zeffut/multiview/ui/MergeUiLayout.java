@@ -50,12 +50,14 @@ public final class MergeUiLayout {
     }
 
     /**
-     * True if a click at {@code mouseY} lands on the *visible* part of the checkbox: inside the
-     * checkbox's vertical span (±1 for the border) AND inside the list viewport, so a click on the
-     * sliver hidden under an overlay doesn't toggle a half-scrolled row.
+     * True if a click at {@code (mouseX, mouseY)} lands on the visible part of a replay row: inside
+     * the row rectangle AND inside the list viewport, so a click on the sliver of a half-scrolled
+     * row hidden under an overlay doesn't toggle it.
      */
-    public static boolean checkboxClickable(double mouseY, int cbY, int cbSize, int listTop, int listBottom) {
-        return mouseY >= cbY - 1 && mouseY <= cbY + cbSize + 1
+    public static boolean rowClicked(double mouseX, double mouseY, int rowLeft, int rowWidth,
+                                     int rowTop, int rowBottom, int listTop, int listBottom) {
+        return mouseX >= rowLeft && mouseX <= rowLeft + rowWidth
+                && mouseY >= rowTop && mouseY <= rowBottom
                 && mouseY >= listTop && mouseY <= listBottom;
     }
 }
