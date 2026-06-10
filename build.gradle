@@ -58,6 +58,9 @@ dependencies {
     def flashbackJar = file("libs/Flashback-${project.flashback_version}-for-MC${project.minecraft_version}.jar")
     if (flashbackJar.exists()) {
         modCompileOnly files(flashbackJar)
+        // Dev-runtime only (NOT bundled in the published jar) so `runClient` can reach
+        // Flashback's SelectReplayScreen for manual UI testing. Flashback is not redistributed.
+        modLocalRuntime files(flashbackJar)
     } else {
         logger.warn("Flashback jar not found at ${flashbackJar.path} — compiling without Flashback API bindings.")
     }
