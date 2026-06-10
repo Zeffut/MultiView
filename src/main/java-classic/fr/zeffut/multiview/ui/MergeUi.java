@@ -295,13 +295,19 @@ public final class MergeUi {
      * the duration. Used to reject merging replays that aren't from the same live moment.
      */
     private static long[] recordingWindow(ReplaySummary summary) {
-        long end = summary.getLastModified();
         int ticks = 0;
         try {
             var meta = summary.getReplayMetadata();
             if (meta != null) ticks = meta.totalTicks;
-        } catch (Throwable ignore) { /* metadata unavailable — degenerate window, ignored by the guard */ }
+        } catch (Throwable ignore) { /* metadata unavailable — duration treated as 0 */ }
         long durationMs = (long) Math.max(0, ticks) * 50L;
+        // Prefer the recording instant parsed from the file name (immutable). The file's
+        // last-modified time is unreliable — a copy/move resets it, making unrelated replays
+        // look simultaneous — so it's only a fallback for user-renamed replays.
+        Path path = summary.getPath();
+        Long start = MergeUiLayout.replayStartMillis(path == null ? null : path.getFileName().toString());
+        if (start != null) return new long[]{ start, start + durationMs };
+        long end = summary.getLastModified();
         return new long[]{ end - durationMs, end };
     }
 

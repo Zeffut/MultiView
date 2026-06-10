@@ -77,4 +77,25 @@ public final class MergeUiLayout {
         }
         return true;
     }
+
+    /**
+     * Parses the recording-start epoch-millis from a default Flashback replay file name like
+     * {@code "2026-04-29T18_29_59.zip"} (local time). This is the true recording instant and is
+     * immutable — unlike the file's last-modified time, which a copy/move resets. Returns
+     * {@code null} when the name doesn't match that pattern (e.g. a user-renamed replay), so the
+     * caller can fall back to the file timestamp.
+     */
+    public static Long replayStartMillis(String fileName) {
+        if (fileName == null) return null;
+        String n = fileName;
+        int dot = n.lastIndexOf('.');
+        if (dot > 0) n = n.substring(0, dot);
+        try {
+            java.time.LocalDateTime dt = java.time.LocalDateTime.parse(n,
+                    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH_mm_ss"));
+            return dt.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+        } catch (Exception e) {
+            return null;
+        }
+    }
 }

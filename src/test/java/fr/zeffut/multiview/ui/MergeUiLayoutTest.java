@@ -113,4 +113,19 @@ class MergeUiLayoutTest {
         assertTrue(MergeUiLayout.allWindowsOverlap(new long[][]{{1000, 5000}}));
         assertTrue(MergeUiLayout.allWindowsOverlap(new long[][]{}));
     }
+
+    @Test
+    void replayStartMillisParsesFlashbackNames() {
+        Long a = MergeUiLayout.replayStartMillis("2026-04-29T18_29_59.zip");
+        Long b = MergeUiLayout.replayStartMillis("2026-03-22T19_44_53.zip");
+        assertNotNull(a);
+        assertNotNull(b);
+        assertTrue(a > b, "a later filename must parse to a larger instant");
+        // Same instant regardless of extension presence.
+        assertEquals(a, MergeUiLayout.replayStartMillis("2026-04-29T18_29_59"));
+        // Non-default / renamed / null names → null (caller falls back to file time).
+        assertNull(MergeUiLayout.replayStartMillis("J5 - SCENE 23_24 - Fight.zip"));
+        assertNull(MergeUiLayout.replayStartMillis("merged_20260610_120000.zip"));
+        assertNull(MergeUiLayout.replayStartMillis(null));
+    }
 }
