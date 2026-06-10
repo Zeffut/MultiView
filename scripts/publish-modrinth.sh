@@ -40,7 +40,10 @@ PROJECT_SLUG="multiview"
 
 # Changelog for this release (Modrinth markdown). Edit per release.
 CHANGELOG=$(cat <<'EOF'
-## 0.4.1-beta.2 — merge UI overhaul
+## 0.5.0-beta.1
+
+### Added
+- **Silent background auto-update.** MultiView now keeps itself — and other Zeffut Modrinth mods present in your `mods/` folder — up to date automatically. On startup it hashes the local jars, asks Modrinth for the latest build matching your Minecraft version and loader, downloads verified updates, and swaps them in at game shutdown (a detached helper finishes the swap if a jar is still locked, e.g. on Windows). It runs entirely in the background. Opt-out with `auto_update: false` in `config/multiview-telemetry.json` or `-Dautoupdate.enabled=false`; scope it with the `update_owner`, `update_all`, and `update_exclude` settings.
 
 ### Changed
 - **Multi-row selection** replaces the per-replay checkboxes: left-click replay rows to build the merge set (selected rows are highlighted), double-click still opens a replay, and a single selection keeps the Flashback Open/Edit/Delete buttons working.
