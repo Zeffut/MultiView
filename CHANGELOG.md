@@ -4,6 +4,22 @@ All notable changes are listed here. Format based on [Keep a Changelog](https://
 
 ## Unreleased
 
+## [0.4.1-beta.2] — 2026-06-10
+
+### Changed
+- Replaced the per-replay checkboxes with native-style multi-row selection: left-click rows to
+  build the merge set (selected rows are highlighted); double-click still opens a replay, and a
+  single selection keeps Flashback's Open/Edit/Delete working.
+- Removed the first-run telemetry chat message. Telemetry stays anonymous and opt-out via
+  `/mv telemetry off` (and `-Dmultiview.telemetry=false`), documented in the README.
+
+### Fixed
+- The "Merge" button no longer overlaps Flashback's search/sort row and now resizes responsively
+  with the window.
+- The "Merge" button is correctly greyed out when the selected replays aren't from the same
+  recording moment — derived from the immutable replay file name rather than the file's
+  last-modified time — and for empty (0-tick) replays.
+
 ## [0.4.1-beta.1] — 2026-06-03
 
 ### Added

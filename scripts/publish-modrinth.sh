@@ -40,14 +40,15 @@ PROJECT_SLUG="multiview"
 
 # Changelog for this release (Modrinth markdown). Edit per release.
 CHANGELOG=$(cat <<'EOF'
-## 0.4.1-beta.1 — anonymous telemetry
+## 0.4.1-beta.2 — merge UI overhaul
 
-Adds an **anonymous, opt-out** telemetry layer (PostHog, EU servers) so the mod can be improved based on real usage: merge metrics (counts, durations, sizes, outcomes, per-phase timings), feature/command/UI usage, runtime versions, and **sanitized** error reports. No player names/UUIDs, world/server names, file paths, or replay contents are ever sent — an anonymous random ID is used.
-
-Disable any time with `/mv telemetry off` (or `/mv telemetry status`), the JVM flag `-Dmultiview.telemetry=false`, and it is auto-disabled in dev environments. See the README "Telemetry & privacy" section.
+### Changed
+- **Multi-row selection** replaces the per-replay checkboxes: left-click replay rows to build the merge set (selected rows are highlighted), double-click still opens a replay, and a single selection keeps the Flashback Open/Edit/Delete buttons working.
+- Removed the first-run telemetry chat message. Telemetry stays anonymous and opt-out via `/mv telemetry off` (and `-Dmultiview.telemetry=false`), documented in the README.
 
 ### Fixed
-- Cross-version first-run notice (chat API differs between MC 1.21.x and 26.1). All targets — 1.21.11, 1.21.9/1.21.10, 26.1 — build and pass the merge regression suite.
+- The **Merge** button no longer overlaps the Flashback search/sort row and resizes responsively with the window.
+- The **Merge** button is correctly greyed out when the selected replays are not from the same recording moment (derived from the immutable replay file name, not the file last-modified time) and for empty (0-tick) replays.
 EOF
 )
 
