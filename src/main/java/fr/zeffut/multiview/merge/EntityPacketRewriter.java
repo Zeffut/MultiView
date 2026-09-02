@@ -13,6 +13,7 @@ import net.minecraft.core.Registry;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.function.IntUnaryOperator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -253,8 +254,7 @@ public final class EntityPacketRewriter {
     private final java.util.Map<Long, Integer> rewriteFailureCounts = new java.util.HashMap<>();
 
     /**
-     * Processes a MoveEntities action payload to update SourcePovTracker for the local player.
-     * Does not modify the payload — MoveEntities passthrough is retained (see TODO below).
+     * Rewrites a MoveEntities action payload and updates SourcePovTracker for the local player.
      *
      * <p>Format: {@code VarInt dimensionCount; foreach: ResourceLocation worldKey
      * + VarInt entityCount; foreach entity: VarInt entityId + double x + double y + double z
@@ -279,50 +279,12 @@ public final class EntityPacketRewriter {
         int localEid = localPlayerEntityId[sourceIdx];
 
         try {
-            ByteBuf in = Unpooled.wrappedBuffer(payload);
-            ByteBuf out = Unpooled.buffer(payload.length);
-
-            int dimensionCount = VarInts.readVarInt(in);
-            VarInts.writeVarInt(out, dimensionCount);
-
-            for (int d = 0; d < dimensionCount; d++) {
-                int rlStart = in.readerIndex();
-                skipResourceLocation(in);
-                int rlEnd = in.readerIndex();
-                out.writeBytes(payload, rlStart, rlEnd - rlStart);
-
-                int entityCount = VarInts.readVarInt(in);
-                VarInts.writeVarInt(out, entityCount);
-
-                for (int e = 0; e < entityCount; e++) {
-                    int eid = VarInts.readVarInt(in);
-                    double x = in.readDouble();
-                    double y = in.readDouble();
-                    double z = in.readDouble();
-                    float yaw = in.readFloat();
-                    float pitch = in.readFloat();
-                    float headYaw = in.readFloat();
-                    boolean onGround = in.readBoolean();
-
-                    if (localEid >= 0 && eid == localEid) {
-                        povTracker.update(sourceIdx, tickAbs, x, y, z);
-                    }
-
-                    int globalEid = safeRemap(sourceIdx, eid);
-                    VarInts.writeVarInt(out, globalEid);
-                    out.writeDouble(x);
-                    out.writeDouble(y);
-                    out.writeDouble(z);
-                    out.writeFloat(yaw);
-                    out.writeFloat(pitch);
-                    out.writeFloat(headYaw);
-                    out.writeBoolean(onGround);
-                }
-            }
-
-            byte[] result = new byte[out.readableBytes()];
-            out.readBytes(result);
-            return result;
+            return rewriteMoveEntitiesPayload(payload, eid -> safeRemap(sourceIdx, eid),
+                    (eid, x, y, z) -> {
+                        if (localEid >= 0 && eid == localEid) {
+                            povTracker.update(sourceIdx, tickAbs, x, y, z);
+                        }
+                    });
         } catch (Exception ex) {
             long key = (((long) -1) << 32) | (sourceIdx & 0xFFFFFFFFL);
             int n = rewriteFailureCounts.merge(key, 1, Integer::sum);
@@ -732,5 +694,59 @@ public final class EntityPacketRewriter {
         byte[] result = new byte[out.readableBytes()];
         out.readBytes(result);
         return result;
+    }
+
+    /**
+     * Re-encodes a MoveEntities action with every local entity ID remapped.
+     * Package-private to keep the binary format independently unit-testable.
+     */
+    static byte[] rewriteMoveEntitiesPayload(byte[] payload, IntUnaryOperator entityIdRemapper) {
+        return rewriteMoveEntitiesPayload(payload, entityIdRemapper, (eid, x, y, z) -> { });
+    }
+
+    private static byte[] rewriteMoveEntitiesPayload(byte[] payload, IntUnaryOperator entityIdRemapper,
+                                                       MoveEntitiesObserver observer) {
+        ByteBuf in = Unpooled.wrappedBuffer(payload);
+        ByteBuf out = Unpooled.buffer(payload.length);
+        int dimensionCount = VarInts.readVarInt(in);
+        VarInts.writeVarInt(out, dimensionCount);
+
+        for (int d = 0; d < dimensionCount; d++) {
+            int resourceLocationStart = in.readerIndex();
+            skipResourceLocation(in);
+            out.writeBytes(payload, resourceLocationStart, in.readerIndex() - resourceLocationStart);
+
+            int entityCount = VarInts.readVarInt(in);
+            VarInts.writeVarInt(out, entityCount);
+            for (int e = 0; e < entityCount; e++) {
+                int entityId = VarInts.readVarInt(in);
+                double x = in.readDouble();
+                double y = in.readDouble();
+                double z = in.readDouble();
+                float yaw = in.readFloat();
+                float pitch = in.readFloat();
+                float headYaw = in.readFloat();
+                boolean onGround = in.readBoolean();
+
+                observer.onMovement(entityId, x, y, z);
+                VarInts.writeVarInt(out, entityIdRemapper.applyAsInt(entityId));
+                out.writeDouble(x);
+                out.writeDouble(y);
+                out.writeDouble(z);
+                out.writeFloat(yaw);
+                out.writeFloat(pitch);
+                out.writeFloat(headYaw);
+                out.writeBoolean(onGround);
+            }
+        }
+
+        byte[] result = new byte[out.readableBytes()];
+        out.readBytes(result);
+        return result;
+    }
+
+    @FunctionalInterface
+    private interface MoveEntitiesObserver {
+        void onMovement(int entityId, double x, double y, double z);
     }
 }
