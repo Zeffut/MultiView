@@ -115,15 +115,28 @@ public final class WorldPacketRewriter {
      * @return rewritten payload bytes, or {@code null} to drop the packet entirely
      */
     public byte[] rewrite(int sourceIdx, int tickAbs, byte[] payload) {
+        return rewrite(sourceIdx, tickAbs, payload, false);
+    }
+
+    /**
+     * Rewrites a WORLD GamePacket copied into a snapshot using snapshot-aware LWW.
+     *
+     * @return rewritten payload bytes, or {@code null} when every block update is stale
+     */
+    public byte[] rewriteSnapshot(int sourceIdx, int tickAbs, byte[] payload) {
+        return rewrite(sourceIdx, tickAbs, payload, true);
+    }
+
+    private byte[] rewrite(int sourceIdx, int tickAbs, byte[] payload, boolean snapshot) {
         if (fallbackMode) return payload;
 
         int pid = readFirstVarInt(payload);
 
         try {
             if (pid == idBlockUpdate) {
-                return rewriteBlockUpdate(sourceIdx, tickAbs, payload);
+                return rewriteBlockUpdate(sourceIdx, tickAbs, payload, snapshot);
             } else if (pid == idSectionBlocksUpdate) {
-                return rewriteSectionBlocksUpdate(sourceIdx, tickAbs, payload);
+                return rewriteSectionBlocksUpdate(sourceIdx, tickAbs, payload, snapshot);
             } else {
                 // LEVEL_CHUNK_WITH_LIGHT, FORGET_LEVEL_CHUNK, LIGHT_UPDATE,
                 // BLOCK_ENTITY_DATA, BLOCK_EVENT, CHUNKS_BIOMES: passthrough
@@ -151,7 +164,7 @@ public final class WorldPacketRewriter {
      *
      * @return payload (possibly the original reference if accepted), or {@code null} to drop
      */
-    private byte[] rewriteBlockUpdate(int sourceIdx, int tickAbs, byte[] payload) {
+    private byte[] rewriteBlockUpdate(int sourceIdx, int tickAbs, byte[] payload, boolean snapshot) {
         ByteBuf raw = Unpooled.wrappedBuffer(payload);
 
         // Skip the packetId VarInt to get to the packet body
@@ -168,7 +181,7 @@ public final class WorldPacketRewriter {
         BlockState state = pkt.getBlockState();
         int blockStateId = Block.getId(state);
 
-        boolean accepted = worldMerger.acceptBlockUpdate(
+        boolean accepted = acceptBlockUpdate(snapshot,
                 dimensionFor(sourceIdx),
                 pos.getX(), pos.getY(), pos.getZ(),
                 tickAbs, blockStateId, sourceIdx);
@@ -202,7 +215,7 @@ public final class WorldPacketRewriter {
      *
      * @return re-encoded payload with survivors only, or {@code null} if all dropped
      */
-    private byte[] rewriteSectionBlocksUpdate(int sourceIdx, int tickAbs, byte[] payload) {
+    private byte[] rewriteSectionBlocksUpdate(int sourceIdx, int tickAbs, byte[] payload, boolean snapshot) {
         ByteBuf raw = Unpooled.wrappedBuffer(payload);
 
         // Save the packetId bytes
@@ -220,7 +233,7 @@ public final class WorldPacketRewriter {
 
         pkt.runUpdates((blockPos, blockState) -> {
             int bsId = Block.getId(blockState);
-            boolean accepted = worldMerger.acceptBlockUpdate(
+            boolean accepted = acceptBlockUpdate(snapshot,
                     dimensionFor(sourceIdx),
                     blockPos.getX(), blockPos.getY(), blockPos.getZ(),
                     tickAbs, bsId, sourceIdx);
@@ -266,6 +279,15 @@ public final class WorldPacketRewriter {
         byte[] result = new byte[out.readableBytes()];
         out.readBytes(result);
         return result;
+    }
+
+    private boolean acceptBlockUpdate(boolean snapshot, String dimension, int x, int y, int z,
+                                      int tickAbs, int blockStateId, int sourceIdx) {
+        return snapshot
+                ? worldMerger.acceptSnapshotBlockUpdate(
+                        dimension, x, y, z, tickAbs, blockStateId, sourceIdx)
+                : worldMerger.acceptBlockUpdate(
+                        dimension, x, y, z, tickAbs, blockStateId, sourceIdx);
     }
 
     /**

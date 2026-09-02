@@ -32,6 +32,21 @@ public final class WorldStateMerger {
      */
     public boolean acceptBlockUpdate(String dimension, int x, int y, int z,
                                      int tickAbs, int blockStateId, int sourceIdx) {
+        return accept(dimension, x, y, z, tickAbs, blockStateId, sourceIdx);
+    }
+
+    /**
+     * Applies the same LWW arbitration to a block update copied into a snapshot.
+     * Snapshots represent world state at their absolute segment tick, not an unconditional
+     * reset of state already emitted by another source.
+     */
+    public boolean acceptSnapshotBlockUpdate(String dimension, int x, int y, int z,
+                                             int tickAbs, int blockStateId, int sourceIdx) {
+        return accept(dimension, x, y, z, tickAbs, blockStateId, sourceIdx);
+    }
+
+    private boolean accept(String dimension, int x, int y, int z,
+                           int tickAbs, int blockStateId, int sourceIdx) {
         BlockKey key = blockKey(dimension, x, y, z);
         BlockLww current = state.get(key);
 

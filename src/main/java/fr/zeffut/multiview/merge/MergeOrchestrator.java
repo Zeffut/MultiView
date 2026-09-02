@@ -682,15 +682,23 @@ public final class MergeOrchestrator {
                 int srcGamePacketOrd = snapshotReader.registry().indexOf(ActionType.GAME_PACKET);
                 while (snapshotReader.hasNext() && snapshotReader.isPeekInSnapshot()) {
                     SegmentReader.RawAction raw = snapshotReader.nextRaw();
-                    currentWriter.writeSnapshotAction(raw.ordinal(), raw.payload());
+                    byte[] snapshotPayload = raw.payload();
+                    if (raw.ordinal() == srcGamePacketOrd) {
+                        snapshotPayload = worldRewriter.rewriteSnapshot(
+                                ctx.primarySourceIdx, ctx.toAbsTick(ctx.primarySourceIdx, 0), snapshotPayload);
+                        if (snapshotPayload == null) {
+                            continue;
+                        }
+                    }
+                    currentWriter.writeSnapshotAction(raw.ordinal(), snapshotPayload);
                     // Pre-register PIU(ADD_PLAYER) UUIDs from the snapshot so the live
                     // stream's first PIU for each player is detected as a duplicate and
                     // dropped — otherwise each player appears twice in chat (once from
                     // snapshot, once from the live broadcast at primary's join tick).
-                    if (raw.ordinal() == srcGamePacketOrd && raw.payload().length > 0) {
-                        int pidIn = PacketClassifier.readPacketId(raw.payload());
+                    if (raw.ordinal() == srcGamePacketOrd && snapshotPayload.length > 0) {
+                        int pidIn = PacketClassifier.readPacketId(snapshotPayload);
                         if (snapshotPiuId >= 0 && pidIn == snapshotPiuId) {
-                            playerInfoDeduper.shouldEmitInfoUpdate(raw.payload());
+                            playerInfoDeduper.shouldEmitInfoUpdate(snapshotPayload);
                             snapshotPiuSeenCount++;
                         }
                     }
@@ -886,7 +894,7 @@ public final class MergeOrchestrator {
                     writerHolder[0] = currentWriter;
                     copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
                             currentWriter, currentSegmentStart, mainRegistry, ctx.report,
-                            snapshotPiuId);
+                            snapshotPiuId, worldRewriter, ctx.primarySourceIdx);
                     currentWriter.endSnapshot();
                     currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
                 }
@@ -912,7 +920,7 @@ public final class MergeOrchestrator {
                         writerHolder[0] = currentWriter;
                         copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
                                 currentWriter, currentSegmentStart, mainRegistry, ctx.report,
-                                snapshotPiuId);
+                                snapshotPiuId, worldRewriter, ctx.primarySourceIdx);
                         currentWriter.endSnapshot();
                         currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
                     }
@@ -1323,7 +1331,9 @@ public final class MergeOrchestrator {
             int absTick,
             List<String> destRegistry,
             MergeReport report,
-            int skipPidPlayerInfoUpdate) {
+            int skipPidPlayerInfoUpdate,
+            WorldPacketRewriter worldRewriter,
+            int primarySourceIdx) {
 
         List<Path> segments = primary.segmentPaths();
         if (segments.isEmpty()) return;
@@ -1402,7 +1412,16 @@ public final class MergeOrchestrator {
                         continue;
                     }
                 }
-                dest.writeSnapshotAction(destOrdinal, raw.payload());
+                byte[] snapshotPayload = raw.payload();
+                if (ActionType.GAME_PACKET.equals(typeId)) {
+                    snapshotPayload = worldRewriter.rewriteSnapshot(
+                            primarySourceIdx, absTick, snapshotPayload);
+                    if (snapshotPayload == null) {
+                        droppedCount++;
+                        continue;
+                    }
+                }
+                dest.writeSnapshotAction(destOrdinal, snapshotPayload);
                 copiedCount++;
             }
         } catch (IOException e) {

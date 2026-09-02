@@ -53,4 +53,13 @@ class WorldStateMergerTest {
         assertEquals(1, m.lwwConflicts());
         assertEquals(1, m.lwwOverwrites());
     }
+
+    @Test
+    void snapshotDoesNotOverwriteNewerBlockEdit() {
+        WorldStateMerger m = new WorldStateMerger();
+        m.acceptBlockUpdate(DIM, 12, 64, -8, 100, 42, 1);
+
+        assertFalse(m.acceptSnapshotBlockUpdate(DIM, 12, 64, -8, 0, 7, 0),
+                "an older primary snapshot must not overwrite a newer secondary block edit");
+    }
 }
