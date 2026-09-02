@@ -774,8 +774,10 @@ public final class MergeOrchestrator {
             LOG.warn("MergeOrchestrator: could not resolve special packet ids: "
                     + t.getClass().getSimpleName());
         }
-        // Track which chunks have already been emitted, keyed by content hash.
-        // Prevents multiple POVs from overwriting the same chunk state on playback.
+        // For packets that safely expose their chunk coordinates, resolve the complete
+        // region state by freshness. Opaque/malformed payloads continue through the
+        // legacy content-hash deduplication path below.
+        ChunkFreshnessPolicy chunkFreshness = new ChunkFreshnessPolicy();
         java.util.Set<ChunkHashKey> emittedChunkHashes = new java.util.HashSet<>();
 
 
@@ -1017,9 +1019,10 @@ public final class MergeOrchestrator {
                     case WORLD -> {
                         // Filters applied:
                         //   1. FORGET_LEVEL_CHUNK from secondary: drop (primary-only).
-                        //   2. LEVEL_CHUNK_WITH_LIGHT: dedup by content hash across all
-                        //      sources — avoids multiple POVs overwriting the same chunk
-                        //      with competing states.
+                        //   2. LEVEL_CHUNK_WITH_LIGHT: when its coordinate header is intact,
+                        //      choose one complete state per (dimension, chunk x, chunk z) using
+                        //      tick freshness. Payloads that cannot safely expose a coordinate
+                        //      retain the legacy content-hash deduplication behaviour.
                         //   3. BLOCK_UPDATE / SECTION_BLOCKS_UPDATE: LWW arbitration via
                         //      WorldPacketRewriter (Phase 4.E re-enabled, 0.2.4). Stale
                         //      updates (from a slower POV) are dropped; the rewriter may
@@ -1033,12 +1036,19 @@ public final class MergeOrchestrator {
                                 // drop secondary unload
                             } else if (idLevelChunkWithLight >= 0
                                     && pid == idLevelChunkWithLight) {
-                                ChunkHashKey hash = chunkContentHash(gp.bytes());
-                                if (emittedChunkHashes.add(hash)) {
+                                String dimension = ctx.sources.get(cur.sourceIdx()).metadata().worldName();
+                                if (dimension == null || dimension.isBlank()) {
+                                    dimension = "minecraft:overworld";
+                                }
+                                java.util.Optional<Boolean> freshnessDecision = chunkFreshness.tryShouldEmit(
+                                        dimension, tickAbs, cur.sourceIdx(), gp.bytes());
+                                boolean shouldEmit = freshnessDecision.orElseGet(() ->
+                                        emittedChunkHashes.add(chunkContentHash(gp.bytes())));
+                                if (shouldEmit) {
                                     writeActionToMain(currentWriter, mainRegistry,
                                             cur.head().action(), ctx.report);
                                 }
-                                // else drop duplicate chunk from another source
+                                // Equal/stale coordinate packets and legacy hash duplicates drop.
                             } else {
                                 // Phase 4.E (0.2.4): LWW rewrite for BLOCK_UPDATE /
                                 // SECTION_BLOCKS_UPDATE. Passthrough for all other WORLD
