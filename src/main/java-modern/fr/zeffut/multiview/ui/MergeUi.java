@@ -373,7 +373,7 @@ public final class MergeUi {
         MergeOptions options = new MergeOptions(sourcePaths, destPath, Map.of(), false);
 
         MergeProgressScreen progressScreen = new MergeProgressScreen(parentScreen);
-        client.setScreen(progressScreen);
+        MinecraftScreenAccess.setScreen(client, progressScreen);
 
         state.checkedPaths.clear();
         if (state.mergeButton != null) {
@@ -389,16 +389,16 @@ public final class MergeUi {
             try {
                 MergeOrchestrator.run(options, phase ->
                         client.execute(() -> {
-                            if (client.screen == progressScreen) progressScreen.setPhase(phase);
+                            if (MinecraftScreenAccess.getScreen(client) == progressScreen) progressScreen.setPhase(phase);
                         }));
                 client.execute(() -> {
-                    if (client.screen == progressScreen) progressScreen.onMergeSuccess();
+                    if (MinecraftScreenAccess.getScreen(client) == progressScreen) progressScreen.onMergeSuccess();
                 });
             } catch (Throwable t) {
                 MultiViewMod.LOGGER.error("[MultiView] Merge failed", t);
                 String msg = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
                 client.execute(() -> {
-                    if (client.screen == progressScreen) progressScreen.onMergeError(msg);
+                    if (MinecraftScreenAccess.getScreen(client) == progressScreen) progressScreen.onMergeError(msg);
                 });
             }
         });

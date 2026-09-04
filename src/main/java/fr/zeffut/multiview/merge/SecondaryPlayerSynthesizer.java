@@ -227,6 +227,15 @@ public final class SecondaryPlayerSynthesizer {
      * @param uuid      the secondary player's UUID (from CreateLocalPlayer)
      * @return raw payload bytes, or {@code null} on failure
      */
+    private EntityType<?> playerEntityType() throws ReflectiveOperationException {
+        try {
+            return (EntityType<?>) EntityType.class.getField("PLAYER").get(null);
+        } catch (NoSuchFieldException absentIn26_2) {
+            Class<?> types = Class.forName("net.minecraft.world.entity.EntityTypes");
+            return (EntityType<?>) types.getField("PLAYER").get(null);
+        }
+    }
+
     public byte[] synthesizeAddEntity(int sourceIdx, UUID uuid) {
         if (fallbackMode) return null;
         try {
@@ -238,7 +247,7 @@ public final class SecondaryPlayerSynthesizer {
                     uuid,
                     0.0, 0.0, 0.0,   // initial position — corrected by first TELEPORT_ENTITY
                     0f, 0f,           // yaw, pitch
-                    EntityType.PLAYER,
+                    playerEntityType(),
                     0,                // entityData
                     Vec3.ZERO,       // velocity
                     0.0               // headYaw
