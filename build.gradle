@@ -150,7 +150,11 @@ java {
 
 test {
     useJUnitPlatform()
-    maxHeapSize = "4G"
+    // Keep test JVMs runnable on the 8 GiB CI/development host: tests do not
+    // need a 4 GiB heap nor a CPU-sized fork pool.
+    maxHeapSize = "1G"
+    maxParallelForks = 1
+    jvmArgs "-XX:ActiveProcessorCount=2"
 }
 
 jar {

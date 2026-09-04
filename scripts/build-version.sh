@@ -83,8 +83,10 @@ with open(gp_path, "w") as f:
         f.write(f"{k}={v}\n")
 PY
 
-    # Build — propagate failure explicitly even though set -e is active.
-    if ! (cd "$ROOT" && ./gradlew clean build); then
+    # Build serially: Minecraft remapping can exhaust constrained hosts when Gradle
+    # schedules workers in parallel.  Keep this path equivalent to CI while safe
+    # for the supported 8 GiB development machine.
+    if ! (cd "$ROOT" && ./gradlew clean build --no-daemon --max-workers=1); then
         echo "ERROR: gradlew build failed for MC ${version}" >&2
         exit 1
     fi
