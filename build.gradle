@@ -176,3 +176,13 @@ remapJar {
 tasks.named('build') {
     dependsOn shadowJar
 }
+
+// Minecraft 26.1+ is built with Loom's noIntermediateMappings() mode. There is
+// no intermediary namespace in that mapping tree, so remapping a sources jar
+// cannot succeed. The distributable remapped mod jar remains part of `build`;
+// omit only the unusable remapped sources artifact for these targets.
+if (project.findProperty("no_intermediate") == "true") {
+    tasks.named('remapSourcesJar') {
+        enabled = false
+    }
+}
