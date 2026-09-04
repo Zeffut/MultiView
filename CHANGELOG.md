@@ -4,6 +4,14 @@ All notable changes are listed here. Format based on [Keep a Changelog](https://
 
 ## Unreleased
 
+## [0.5.0] — 2026-09-04
+
+### Added
+- Stable Minecraft 26.2 support with Flashback 0.43.2.
+
+### Changed
+- The 26.2 build fetches the pinned Flashback 0.43.2 Modrinth artifact and verifies its SHA-512 before compilation.
+
 ## [0.5.0-beta.1] — 2026-06-10
 
 ### Added
