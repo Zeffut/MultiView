@@ -41,6 +41,13 @@ build_one() {
 
     echo "=== Building MultiView for MC $version ==="
 
+    # Version configs that pin Flashback must provision and verify the exact
+    # compile-time dependency. Never silently fall back to the root/default
+    # (currently 1.21.11) configuration when a target dependency is missing.
+    if grep -q '^flashback_sha512=' "$props"; then
+        "$ROOT/scripts/download-flashback.sh" "$version"
+    fi
+
     # Backup current gradle.properties on first call
     if [ ! -f "$ORIG_BACKUP" ]; then
         cp "$GRADLE_PROPS" "$ORIG_BACKUP"

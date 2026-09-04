@@ -6,7 +6,7 @@
 #
 # Requires:
 #   - MODRINTH_TOKEN in .env (scopes: WRITE_PROJECTS / CREATE_VERSION)
-#   - dist/multiview-<version>-mc<range>.jar built for each range (see build-version.sh)
+#   - build/libs/multiview-<version>-mc<range>.jar built for each range (see build-version.sh)
 #
 # For each range it clones the metadata (name, game_versions, dependencies, loaders)
 # from the project's most recent existing version of that same range, so the upload
@@ -37,12 +37,14 @@ if [ -z "${MODRINTH_TOKEN:-}" ]; then
 fi
 
 PROJECT_SLUG="multiview"
+ARTIFACT_DIR="${ARTIFACT_DIR:-build/libs}"
 
 # Changelog for this release (Modrinth markdown). Edit per release.
 CHANGELOG=$(cat <<'EOF'
-## 0.5.0-beta.1
+## 0.5.0
 
 ### Added
+- Stable Minecraft 26.2 support with Flashback 0.43.2.
 - **Silent background auto-update.** MultiView now keeps itself — and other Zeffut Modrinth mods present in your `mods/` folder — up to date automatically. On startup it hashes the local jars, asks Modrinth for the latest build matching your Minecraft version and loader, downloads verified updates, and swaps them in at game shutdown (a detached helper finishes the swap if a jar is still locked, e.g. on Windows). It runs entirely in the background. Opt-out with `auto_update: false` in `config/multiview-telemetry.json` or `-Dautoupdate.enabled=false`; scope it with the `update_owner`, `update_all`, and `update_exclude` settings.
 
 ### Changed
@@ -56,10 +58,10 @@ EOF
 )
 
 # range_key : jar suffix / dist filename
-RANGES=("1.21.11" "1.21.9" "26.1")
+RANGES=("1.21.11" "1.21.9" "26.1" "26.2")
 
 for range in "${RANGES[@]}"; do
-    jar="dist/multiview-${VERSION}-mc${range}.jar"
+    jar="${ARTIFACT_DIR}/multiview-${VERSION}-mc${range}.jar"
     if [ ! -f "$jar" ]; then
         echo "ERROR: missing jar $jar — build it first (./scripts/build-version.sh ${range})." >&2
         exit 1
@@ -98,11 +100,12 @@ if prior:
     loaders = prior["loaders"]
 else:
     # Fallback defaults if no prior version of this range exists.
-    label = {"1.21.11": "MC 1.21.11", "1.21.9": "MC 1.21.9 / 1.21.10", "26.1": "MC 26.1"}.get(rng, f"MC {rng}")
+    label = {"1.21.11": "MC 1.21.11", "1.21.9": "MC 1.21.9 / 1.21.10", "26.1": "MC 26.1", "26.2": "MC 26.2"}.get(rng, f"MC {rng}")
     name = f"MultiView {version} — {label}"
     game_versions = {"1.21.11": ["1.21.11"],
                      "1.21.9": ["1.21.9", "1.21.10"],
-                     "26.1": ["26.1", "26.1.1", "26.1.2"]}.get(rng, [rng])
+                     "26.1": ["26.1", "26.1.1", "26.1.2"],
+                     "26.2": ["26.2"]}.get(rng, [rng])
     deps = [{"project_id": "2sJTwAvJ", "dependency_type": "required"}]
     loaders = ["fabric"]
 
@@ -112,7 +115,7 @@ data = {
     "changelog": changelog,
     "dependencies": deps,
     "game_versions": game_versions,
-    "version_type": "beta",
+    "version_type": "release",
     "loaders": loaders,
     "featured": True,
     "project_id": None,  # filled below via slug -> id

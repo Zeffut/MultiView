@@ -76,6 +76,8 @@ dependencies {
         // Dev-runtime only (NOT bundled in the published jar) so `runClient` can reach
         // Flashback's SelectReplayScreen for manual UI testing. Flashback is not redistributed.
         modLocalRuntime files(flashbackJar)
+    } else if (project.findProperty("flashback_sha512")) {
+        throw new GradleException("Pinned Flashback dependency is missing: ${flashbackJar.path}. Run ./scripts/download-flashback.sh ${project.minecraft_version}.")
     } else {
         logger.warn("Flashback jar not found at ${flashbackJar.path} — compiling without Flashback API bindings.")
     }
@@ -173,4 +175,14 @@ remapJar {
 
 tasks.named('build') {
     dependsOn shadowJar
+}
+
+// Minecraft 26.1+ is built with Loom's noIntermediateMappings() mode. There is
+// no intermediary namespace in that mapping tree, so remapping a sources jar
+// cannot succeed. The distributable remapped mod jar remains part of `build`;
+// omit only the unusable remapped sources artifact for these targets.
+if (project.findProperty("no_intermediate") == "true") {
+    tasks.named('remapSourcesJar') {
+        enabled = false
+    }
 }

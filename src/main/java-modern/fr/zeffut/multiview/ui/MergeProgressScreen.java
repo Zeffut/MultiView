@@ -72,7 +72,7 @@ public class MergeProgressScreen extends Screen {
                         Component.translatable("gui.back"),
                         btn -> {
                             if (this.minecraft != null) {
-                                this.minecraft.setScreen(this.previousScreen);
+                                MinecraftScreenAccess.setScreen(this.minecraft, this.previousScreen);
                             }
                         })
                 .bounds(leftX + btnW + gap, btnY, btnW, 20)
@@ -104,7 +104,7 @@ public class MergeProgressScreen extends Screen {
             if (this.previousScreen instanceof SelectReplayScreen srs) {
                 reloadReplayList(srs);
             }
-            this.minecraft.setScreen(this.previousScreen);
+            MinecraftScreenAccess.setScreen(this.minecraft, this.previousScreen);
         }
         if ((done || errorMessage != null) && this.children() != null) {
             for (var child : this.children()) {

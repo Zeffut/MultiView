@@ -334,7 +334,7 @@ public final class TestHarness implements ClientModInitializer {
     private void handleRecordTick(Minecraft mc) {
         switch (phase) {
             case REC_WAIT_TITLE -> {
-                if (mc.screen instanceof TitleScreen) {
+                if (fr.zeffut.multiview.ui.MinecraftScreenAccess.getScreen(mc) instanceof TitleScreen) {
                     phaseLog.add(timestamp() + " title screen — invoking CreateWorldScreen.openFresh");
                     try {
                         CreateWorldScreen.openFresh(mc, () -> {});
@@ -349,7 +349,7 @@ public final class TestHarness implements ClientModInitializer {
             }
             case REC_WAIT_CREATE_SCREEN -> {
                 recordWaitTicks++;
-                if (mc.screen instanceof CreateWorldScreen cws) {
+                if (fr.zeffut.multiview.ui.MinecraftScreenAccess.getScreen(mc) instanceof CreateWorldScreen cws) {
                     if (recordWaitTicks == 1) {
                         phaseLog.add(timestamp() + " CreateWorldScreen visible — enumerating widgets");
                         java.util.Set<Object> seen = new java.util.HashSet<>();
