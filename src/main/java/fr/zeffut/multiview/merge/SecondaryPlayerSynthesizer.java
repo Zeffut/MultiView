@@ -292,18 +292,29 @@ public final class SecondaryPlayerSynthesizer {
                                      float yaw, float pitch) {
         if (fallbackMode || entityId < 0) return null;
         try {
-            PositionMoveRotation pos = new PositionMoveRotation(
-                    new Vec3(x, y, z),
-                    Vec3.ZERO,   // deltaMovement
-                    yaw,
-                    pitch
-            );
-
-            ClientboundEntityPositionSyncPacket packet = new ClientboundEntityPositionSyncPacket(
-                    entityId,
-                    pos,
-                    false          // onGround
-            );
+            ClientboundEntityPositionSyncPacket packet;
+            try {
+                // Minecraft 26.3 changed TELEPORT_ENTITY from PositionMoveRotation to
+                // PositionPath plus separate rotations. Resolve that form reflectively so
+                // the shared merger source remains loadable by the prior 26.x packet form.
+                Class<?> positionPathType = Class.forName("net.minecraft.world.entity.PositionPath");
+                Object positionPath = positionPathType
+                        .getMethod("of", Vec3.class)
+                        .invoke(null, new Vec3(x, y, z));
+                packet = (ClientboundEntityPositionSyncPacket) ClientboundEntityPositionSyncPacket.class
+                        .getConstructor(int.class, positionPathType, float.class, float.class, boolean.class)
+                        .newInstance(entityId, positionPath, yaw, pitch, false);
+            } catch (ClassNotFoundException noPositionPath) {
+                PositionMoveRotation pos = new PositionMoveRotation(
+                        new Vec3(x, y, z),
+                        Vec3.ZERO,
+                        yaw,
+                        pitch
+                );
+                packet = (ClientboundEntityPositionSyncPacket) ClientboundEntityPositionSyncPacket.class
+                        .getConstructor(int.class, PositionMoveRotation.class, boolean.class)
+                        .newInstance(entityId, pos, false);
+            }
 
             ByteBuf body = Unpooled.buffer(32);
             FriendlyByteBuf pbuf = new FriendlyByteBuf(body);
