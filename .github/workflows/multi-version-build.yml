@@ -1,15 +1,15 @@
-name: Minecraft 26.2 build
+name: Minecraft 26.3 build
 
 on:
   pull_request:
     branches: [main]
   push:
-    branches: [port/26.2]
+    branches: [port/26.3]
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build MC 26.2
+    name: Build MC 26.3
     runs-on: ubuntu-latest
 
     steps:
@@ -27,30 +27,30 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-26.2-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'versions/26.2.properties', 'scripts/download-flashback.sh') }}
+          key: ${{ runner.os }}-gradle-26.3-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'versions/26.3.properties', 'scripts/download-flashback.sh') }}
           restore-keys: |
-            ${{ runner.os }}-gradle-26.2-
+            ${{ runner.os }}-gradle-26.3-
 
-      - name: Download and verify Flashback 0.43.2
+      - name: Download and verify Flashback 0.43.4
         run: |
           set -e
           chmod +x scripts/download-flashback.sh scripts/build-version.sh
-          ./scripts/download-flashback.sh 26.2
+          ./scripts/download-flashback.sh 26.3
 
-      - name: Build and test for MC 26.2
+      - name: Build and test for MC 26.3
         run: |
           set -e
           chmod +x scripts/build-version.sh
-          ./scripts/build-version.sh 26.2
+          ./scripts/build-version.sh 26.3
 
       - name: Record artifact checksum
-        run: sha512sum build/libs/multiview-*-mc26.2.jar | tee build/libs/multiview-mc26.2.sha512
+        run: sha512sum build/libs/multiview-*-mc26.3.jar | tee build/libs/multiview-mc26.3.sha512
 
       - name: Upload jar artifact
         uses: actions/upload-artifact@v4
         with:
-          name: multiview-mc26.2
+          name: multiview-mc26.3
           path: |
-            build/libs/multiview-*-mc26.2.jar
-            build/libs/multiview-mc26.2.sha512
+            build/libs/multiview-*-mc26.3.jar
+            build/libs/multiview-mc26.3.sha512
           if-no-files-found: error
