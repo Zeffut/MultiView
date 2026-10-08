@@ -19,10 +19,6 @@ public final class TimelineAligner {
     private static final Pattern TS_PATTERN = Pattern.compile(
             "(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2})[:_](\\d{2})[:_](\\d{2})");
 
-    /**
-     * Extrait un timestamp du format "YYYY-MM-DDTHH:mm:ss" (ou avec _ au lieu de :)
-     * dans `name`, retourne l'epoch × 20 (ticks), ou -1 si introuvable.
-     */
     public record SetTimeAnchor(int tickLocal, long gameTime) {}
 
     /**
@@ -86,7 +82,13 @@ public final class TimelineAligner {
         return -1;
     }
 
-    public record Source(String label, Optional<SetTimeAnchor> anchor, String metadataName, int totalTicks) {}
+    /** label remains the override key; replayName is diagnostic-only (original path for ZIPs). */
+    public record Source(String label, Optional<SetTimeAnchor> anchor, String metadataName,
+                         int totalTicks, String replayName) {
+        public Source(String label, Optional<SetTimeAnchor> anchor, String metadataName, int totalTicks) {
+            this(label, anchor, metadataName, totalTicks, label);
+        }
+    }
 
     public record AlignmentResult(int[] tickOffsets, int mergedStartTick, int mergedTotalTicks, String strategy) {}
 
@@ -107,8 +109,14 @@ public final class TimelineAligner {
                 long ticks = parseMetadataNameToTicks(sources.get(i).metadataName());
                 if (ticks < 0) {
                     throw new IllegalArgumentException(
-                            "Source '" + sources.get(i).label() + "' : pas de SetTime ET metadata.name non parseable. "
-                          + "Fournir --offset-" + sources.get(i).label() + "=<N>");
+                            "Source '" + sources.get(i).replayName()
+                          + "' : alignement SetTime indisponible pour l'ensemble des sources "
+                          + "et metadata.name='" + sources.get(i).metadataName() + "' sans timestamp reconnu. "
+                          + "Restaurer dans metadata.json le champ name avec le véritable début d'enregistrement "
+                          + "au format YYYY-MM-DDTHH:mm:ss ou YYYY-MM-DDTHH_mm_ss "
+                          + "(chaque séparateur horaire peut être : ou _). "
+                          + "Renommer le fichier replay ne suffit pas ; les offsets sont appliqués après "
+                          + "le parsing et ne contournent pas ce rejet. Aucun alignement implicite n'est effectué.");
                 }
                 absoluteOffsets[i] = ticks;
             }
@@ -148,6 +156,14 @@ public final class TimelineAligner {
         return new AlignmentResult(tickOffsets, 0, (int) max, strategy);
     }
 
+    /**
+     * Cherche le premier timestamp dans {@code metadata.name}, même avec un préfixe/suffixe.
+     * Format : {@code YYYY-MM-DDTHH:mm:ss} ou {@code YYYY-MM-DDTHH_mm_ss} ; chaque
+     * séparateur horaire accepte indépendamment {@code :} ou {@code _}. Le {@code T}
+     * est majuscule et les champs hors année ont deux chiffres. Interprétation UTC,
+     * epoch × 20 ticks ; -1 si aucun motif reconnu, DateTimeException si date invalide.
+     * Aucun timestamp n'est déduit du nom de fichier ni de sa date de modification.
+     */
     public static long parseMetadataNameToTicks(String name) {
         Matcher m = TS_PATTERN.matcher(name);
         if (!m.find()) return -1L;

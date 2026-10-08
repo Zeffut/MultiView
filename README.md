@@ -39,6 +39,38 @@ Chat-only fallback (e.g. when you want to script merges):
 /mv merge <source1> <source2> <output>
 ```
 
+## Replay time alignment and rejected names
+
+MultiView uses `ClientboundSetTimePacket` anchors only when every source has one
+within its first 1200 local ticks. If any source lacks an anchor, all sources must
+instead have a recognized recording timestamp in `metadata.json`'s `name` field.
+
+The existing parser searches for the first timestamp inside that field (prefixes
+and suffixes are allowed), not in the replay filename:
+
+- `YYYY-MM-DDTHH:mm:ss`, for example `2026-02-20T23:25:15`.
+- `YYYY-MM-DDTHH_mm_ss`, for example `2026-02-20T23_25_15`.
+- Each time separator independently accepts `:` or `_`, so mixed separators are
+  also accepted. `T` must be uppercase; month, day, hour, minute and second must
+  each have two digits. The calendar date/time must be valid.
+
+The timestamp is interpreted as UTC and converted to 20 ticks per second. This
+is a fallback, not a guarantee that the recordings are synchronized correctly.
+
+If the name has no recognized timestamp, the merge stops and identifies both the
+source label and its `metadata.name`. Back up the replay, then restore the `name`
+field in its `metadata.json` (inside the replay zip or extracted replay folder)
+using the actual known recording start in one of the formats above. Preserve the
+other metadata and archive entries. Renaming the zip alone does not change that
+field. If the actual recording start is unknown, do not invent a timestamp: the
+current fallback cannot safely align that replay. Recordings with valid SetTime
+anchors in every source can use the anchor path without parsing the names.
+
+Tick overrides (including the `--offset-<source>=<N>` syntax referenced in older
+design notes) are applied only after the anchor/timestamp stage has succeeded;
+they cannot bypass an unrecognized name. There is no implicit zero-offset or
+file-modification-time alignment in `TimelineAligner`.
+
 ## Compatibility
 
 | Minecraft | Fabric Loader | Flashback | MultiView version |
