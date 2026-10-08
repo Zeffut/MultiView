@@ -174,7 +174,8 @@ public final class MergeOrchestrator {
                         r.folder().getFileName().toString(),
                         anchor,
                         r.metadata().name(),
-                        r.metadata().totalTicks()));
+                        r.metadata().totalTicks(),
+                        options.sources().get(i).toString()));
             }
             TimelineAligner.AlignmentResult alignment = TimelineAligner.alignAll(
                     alignSources, options.tickOverrides());
