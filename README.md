@@ -95,20 +95,25 @@ Requires Java 21 on 1.21.x and Java 25 on 26.1+. Fabric API is required.
 
 ## Telemetry & privacy
 
-MultiView sends **anonymous** usage statistics via [PostHog](https://posthog.com) (EU servers)
+MultiView sends **pseudonymous** usage statistics via [PostHog](https://posthog.com) (EU servers)
 to help improve the mod. It is **enabled by default** but fully optional.
 
 **What is collected:** mod/Minecraft/Flashback versions, OS and Java version, locale, which
 features are used, merge counts/durations/sizes/outcomes, and sanitized error reports.
 
 **What is never collected:** player names or UUIDs, world/server names, file paths (only file
-names/sizes), or any replay contents. An anonymous random ID is used — it is not linked to your
-Minecraft account.
+names/sizes), or any replay contents. A persistent random ID links events from the same installation;
+it is not your Minecraft account UUID and does not guarantee anonymity. PostHog sees the network
+IP during a request, even with `$ip: null` in the payload. IP-derived geolocation may be possible
+server-side; current project settings are not verified here.
 
 **How to disable:**
 - In game: `/mv telemetry off` (and `/mv telemetry status` to check).
 - Or set the JVM flag `-Dmultiview.telemetry=false`.
 - Telemetry is automatically disabled in Fabric development environments.
+- Development and JVM exclusions cannot be overridden by `/mv telemetry on` in the same lifecycle.
+  Outside those exclusions, this command is an explicit opt-in; a persisted opt-out remains off
+  across restart until the user explicitly enables it.
 
 ## Known limitations
 
