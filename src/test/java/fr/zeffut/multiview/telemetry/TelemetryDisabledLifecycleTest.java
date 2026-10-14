@@ -11,6 +11,47 @@ import static org.junit.jupiter.api.Assertions.*;
 class TelemetryDisabledLifecycleTest {
     @AfterEach void cleanup() { Telemetry.shutdown(); }
 
+    @Test void devGateCannotBeOverriddenByRuntimeConsent(@TempDir Path dir) {
+        Path file = dir.resolve("dev.json");
+        TelemetryConfig.load(file).setEnabled(false);
+        Telemetry.init(file, "test", true);
+        Telemetry.setEnabled(true);
+        assertFalse(Telemetry.isEnabled());
+        assertFalse(TelemetryConfig.load(file).isEnabled());
+        Telemetry.capture("not_sent");
+    }
+
+    @Test void jvmGateRemainsLatchedAfterPropertyIsCleared(@TempDir Path dir) {
+        String previous = System.getProperty("multiview.telemetry");
+        try {
+            System.setProperty("multiview.telemetry", "false");
+            Telemetry.init(dir.resolve("jvm.json"), "test", false);
+            System.clearProperty("multiview.telemetry");
+            Telemetry.setEnabled(true);
+            assertFalse(Telemetry.isEnabled());
+        } finally {
+            if (previous == null) System.clearProperty("multiview.telemetry");
+            else System.setProperty("multiview.telemetry", previous);
+        }
+    }
+
+    @Test void liveJvmGateDropsCaptureWithoutAccessingTransport(@TempDir Path dir) {
+        String previous = System.getProperty("multiview.telemetry");
+        try {
+            TelemetryTest.RecordingSink recorder = new TelemetryTest.RecordingSink();
+            Telemetry.initForTest(TelemetryConfig.load(dir.resolve("live.json")),
+                    new TelemetryContext(Map.of(), "test"), recorder);
+            System.setProperty("multiview.telemetry", "false");
+            assertFalse(Telemetry.isEnabled());
+            Telemetry.capture("not_sent");
+            Telemetry.setEnabled(true);
+            assertTrue(recorder.calls.isEmpty());
+        } finally {
+            if (previous == null) System.clearProperty("multiview.telemetry");
+            else System.setProperty("multiview.telemetry", previous);
+        }
+    }
+
     @Test void devInitNeverEnables(@TempDir Path dir) {
         Telemetry.init(dir.resolve("config.json"), "test", true);
         assertFalse(Telemetry.isEnabled());
