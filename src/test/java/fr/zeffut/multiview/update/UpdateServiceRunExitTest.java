@@ -17,11 +17,14 @@ import static org.junit.jupiter.api.Assertions.*;
 class UpdateServiceRunExitTest {
     @TempDir Path dir;
 
-    @Test void cleanupOnlyResumesWithoutNewJars() throws Exception { exercise(true, false); }
-    @Test void stagedSwapResumesWithoutNewJars() throws Exception { exercise(true, true); }
-    @Test void disabledUpdaterDoesNotSwap() throws Exception { exercise(false, false); }
+    @Test void cleanupOnlyResumesWithoutNewJars() throws Exception { exercise("true", false); }
+    @Test void stagedSwapResumesWithoutNewJars() throws Exception { exercise("true", true); }
+    @Test void disabledUpdaterDoesNotSwap() throws Exception { exercise("false", false); }
+    @Test void persistedDisabledSurvivesTelemetryShutdown() throws Exception { exercise("config-off", false); }
+    @Test void recoveredWorkIsArmedBeforeBlockingNetworkScan() throws Exception { exercise("blocked-scan", false); }
 
-    private void exercise(boolean enabled, boolean staged) throws Exception {
+    private void exercise(String mode, boolean staged) throws Exception {
+        boolean enabled = !mode.equals("false") && !mode.equals("config-off");
         Path mods = Files.createDirectories(dir.resolve("mods"));
         Path work = Files.createDirectories(dir.resolve(".autoupdate"));
         Path old = mods.resolve("old.jar"), target = mods.resolve("target.jar"), stage = work.resolve("stage.jar");
@@ -39,7 +42,7 @@ class UpdateServiceRunExitTest {
         for (int attempt = 0; attempt < 3; attempt++) {
             Path log = dir.resolve("jvm-" + attempt + ".log");
             Process child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                    "-cp", cp, RunExitProbe.class.getName(), dir.toString(), Boolean.toString(enabled))
+                    "-cp", cp, RunExitProbe.class.getName(), dir.toString(), mode)
                     .redirectErrorStream(true).redirectOutput(log.toFile()).start();
             boolean exited = child.waitFor(30, TimeUnit.SECONDS);
             if (!exited) child.destroyForcibly();

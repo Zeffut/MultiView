@@ -74,8 +74,10 @@ public final class UpdateService {
     private final Path workDir;     // <gameDir>/.autoupdate
     private final Path stagingDir;  // <gameDir>/.autoupdate/staging
     private final Path stateFile;   // <gameDir>/.autoupdate/state.json
+    // Capture policy before the daemon starts; Telemetry.shutdown() clears its config.
+    private final boolean configuredEnabled;
 
-    private final List<Pending> pendings = new ArrayList<>();
+    private final List<Pending> pendings = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private record Pending(String projectId, String slug, String from, String to,
                            String oldJar, String stagedJar, String targetJar) {}
@@ -112,6 +114,7 @@ public final class UpdateService {
         this.workDir = workDir;
         this.stagingDir = workDir.resolve("staging");
         this.stateFile = workDir.resolve("state.json");
+        this.configuredEnabled = "true".equalsIgnoreCase(Telemetry.setting("auto_update", "true"));
     }
 
     private void run() {
@@ -123,6 +126,12 @@ public final class UpdateService {
                 LOG.info("[AutoUpdate] disabled by config/property, skipping update check");
                 return;
             }
+            // Arm recovered work before any scan/network wait. The worker is a daemon:
+            // it need not finish before normal JVM exit. Snapshot iteration also allows
+            // staging to finish concurrently with shutdown without invalidating the hook.
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                if (enabled()) applyAll();
+            }, "autoupdate-swap"));
             if (!Files.isDirectory(modsDir)) {
                 LOG.info("[AutoUpdate] mods directory {} not found, nothing to do", modsDir);
                 return;
@@ -209,12 +218,6 @@ public final class UpdateService {
             LOG.warn("[AutoUpdate] update check failed: {}", t.toString());
             emit("update_failed", Map.of(
                     "stage", "check", "reason", t.toString()));
-        } finally {
-            // Recovery must not depend on discovering a new, non-pending JAR or on
-            // a successful network scan. Do not arm swaps when auto-update is off.
-            if (enabled() && !pendings.isEmpty()) {
-                Runtime.getRuntime().addShutdownHook(new Thread(this::applyAll, "autoupdate-swap"));
-            }
         }
     }
 
@@ -345,7 +348,7 @@ public final class UpdateService {
     private boolean enabled() {
         String sys = System.getProperty("autoupdate.enabled");
         if (sys != null) return Boolean.parseBoolean(sys);
-        return "true".equalsIgnoreCase(Telemetry.setting("auto_update", "true"));
+        return configuredEnabled;
     }
 
     private boolean alreadyPending(String projectId) {
