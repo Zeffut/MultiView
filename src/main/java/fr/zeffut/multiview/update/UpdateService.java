@@ -196,9 +196,6 @@ public final class UpdateService {
             }
 
             saveState();
-            if (!pendings.isEmpty()) {
-                Runtime.getRuntime().addShutdownHook(new Thread(this::applyAll, "autoupdate-swap"));
-            }
 
             emit("check_completed", Map.of(
                     "scanned", jarsByHash.size(),
@@ -212,6 +209,12 @@ public final class UpdateService {
             LOG.warn("[AutoUpdate] update check failed: {}", t.toString());
             emit("update_failed", Map.of(
                     "stage", "check", "reason", t.toString()));
+        } finally {
+            // Recovery must not depend on discovering a new, non-pending JAR or on
+            // a successful network scan. Do not arm swaps when auto-update is off.
+            if (enabled() && !pendings.isEmpty()) {
+                Runtime.getRuntime().addShutdownHook(new Thread(this::applyAll, "autoupdate-swap"));
+            }
         }
     }
 
