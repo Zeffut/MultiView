@@ -70,7 +70,12 @@ dependencies {
     // (not committed — see .gitignore). Download from https://modrinth.com/mod/flashback
     // Dependency is optional so CI can build without the jar; dev environments
     // that need Flashback compile-time bindings must populate libs/ manually.
-    def flashbackJar = file("libs/Flashback-${project.flashback_version}-for-MC${project.minecraft_version}.jar")
+    def flashbackFilename = (project.findProperty('flashback_filename_pattern') ?: "Flashback-${project.flashback_version}-for-MC${project.minecraft_version}.jar")
+            .toString().replace('${flashback_version}', project.flashback_version.toString())
+    if (flashbackFilename.contains('/') || flashbackFilename.contains('\\') || !flashbackFilename.endsWith('.jar')) {
+        throw new GradleException('Invalid pinned Flashback filename')
+    }
+    def flashbackJar = file("libs/${flashbackFilename}")
     if (flashbackJar.exists()) {
         modCompileOnly files(flashbackJar)
         // Dev-runtime only (NOT bundled in the published jar) so `runClient` can reach
