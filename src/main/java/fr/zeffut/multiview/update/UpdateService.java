@@ -74,8 +74,10 @@ public final class UpdateService {
     private final Path workDir;     // <gameDir>/.autoupdate
     private final Path stagingDir;  // <gameDir>/.autoupdate/staging
     private final Path stateFile;   // <gameDir>/.autoupdate/state.json
+    // Capture policy before the daemon starts; Telemetry.shutdown() clears its config.
+    private final boolean configuredEnabled;
 
-    private final List<Pending> pendings = new ArrayList<>();
+    private final List<Pending> pendings = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private record Pending(String projectId, String slug, String from, String to,
                            String oldJar, String stagedJar, String targetJar) {}
@@ -97,15 +99,22 @@ public final class UpdateService {
     }
 
     private UpdateService() {
-        this.loader = Platform.loader();
-        this.mcVersion = Platform.mcVersion();
-        this.modVersion = Platform.modVersion();
+        this(System.getProperty("autoupdate.mods.dir") != null
+                        ? Path.of(System.getProperty("autoupdate.mods.dir")) : Platform.gameDir().resolve("mods"),
+                Platform.gameDir().resolve(".autoupdate"), Platform.loader(), Platform.mcVersion(), Platform.modVersion());
+    }
+
+    // Loader-free construction for filesystem lifecycle tests; no worker/network is started.
+    UpdateService(Path modsDir, Path workDir, String loader, String mcVersion, String modVersion) {
+        this.loader = loader;
+        this.mcVersion = mcVersion;
+        this.modVersion = modVersion;
         this.api = new ModrinthApi(modVersion);
-        String dirOverride = System.getProperty("autoupdate.mods.dir");
-        this.modsDir = dirOverride != null ? Path.of(dirOverride) : Platform.gameDir().resolve("mods");
-        this.workDir = Platform.gameDir().resolve(".autoupdate");
+        this.modsDir = modsDir;
+        this.workDir = workDir;
         this.stagingDir = workDir.resolve("staging");
         this.stateFile = workDir.resolve("state.json");
+        this.configuredEnabled = "true".equalsIgnoreCase(Telemetry.setting("auto_update", "true"));
     }
 
     private void run() {
@@ -117,6 +126,12 @@ public final class UpdateService {
                 LOG.info("[AutoUpdate] disabled by config/property, skipping update check");
                 return;
             }
+            // Arm recovered work before any scan/network wait. The worker is a daemon:
+            // it need not finish before normal JVM exit. Snapshot iteration also allows
+            // staging to finish concurrently with shutdown without invalidating the hook.
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                if (enabled()) applyAll();
+            }, "autoupdate-swap"));
             if (!Files.isDirectory(modsDir)) {
                 LOG.info("[AutoUpdate] mods directory {} not found, nothing to do", modsDir);
                 return;
@@ -190,9 +205,6 @@ public final class UpdateService {
             }
 
             saveState();
-            if (!pendings.isEmpty()) {
-                Runtime.getRuntime().addShutdownHook(new Thread(this::applyAll, "autoupdate-swap"));
-            }
 
             emit("check_completed", Map.of(
                     "scanned", jarsByHash.size(),
@@ -213,20 +225,24 @@ public final class UpdateService {
 
     private void reconcilePreviousSession() {
         List<Pending> previous = loadState();
+        // Reconciliation replaces the in-memory snapshot, including on repeated invocation.
+        pendings.clear();
         if (previous.isEmpty()) return;
         for (Pending p : previous) {
             boolean oldGone = p.oldJar == null || !Files.exists(Path.of(p.oldJar));
             boolean targetThere = Files.exists(Path.of(p.targetJar));
-            Path staged = Path.of(p.stagedJar);
+            Path staged = p.stagedJar != null ? Path.of(p.stagedJar) : null;
             if (oldGone && targetThere) {
                 // Swap landed: report it and clean any staging leftover (janitor copy path).
-                try { Files.deleteIfExists(staged); } catch (Exception ignored) {}
+                if (staged != null) {
+                    try { Files.deleteIfExists(staged); } catch (Exception ignored) {}
+                }
                 LOG.info("[AutoUpdate] update applied: {} {} -> {}", label(p), p.from, p.to);
                 emit("update_applied", Map.of(
                         "project_id", p.projectId,
                         "project_slug", p.slug != null ? p.slug : "unknown",
                         "from_version", p.from, "to_version", p.to));
-            } else if (!oldGone && Files.exists(staged)) {
+            } else if (staged != null && Files.exists(staged)) {
                 // Swap did not happen (crash / locked file): retry at this session's shutdown.
                 pendings.add(p);
                 LOG.info("[AutoUpdate] retrying pending update for {} at next shutdown", label(p));
@@ -246,6 +262,17 @@ public final class UpdateService {
         List<Pending> forJanitor = new ArrayList<>();
         for (Pending p : pendings) {
             try {
+                // A cleanup-only job must never delete the last usable jar if the target
+                // disappeared since reconciliation (or aliases the old path).
+                Path target = Path.of(p.targetJar);
+                if (p.stagedJar == null) {
+                    if (!Files.isRegularFile(target)) continue;
+                    if (p.oldJar != null && Files.exists(Path.of(p.oldJar))
+                            && Files.isSameFile(Path.of(p.oldJar), target)) continue;
+                } else if (!Files.isRegularFile(Path.of(p.stagedJar))) {
+                    // Already applied, or staging was lost: repeated shutdown is a no-op.
+                    continue;
+                }
                 if (p.oldJar != null) Files.deleteIfExists(Path.of(p.oldJar));
                 if (p.stagedJar != null) {
                     Files.move(Path.of(p.stagedJar), Path.of(p.targetJar),
@@ -321,7 +348,7 @@ public final class UpdateService {
     private boolean enabled() {
         String sys = System.getProperty("autoupdate.enabled");
         if (sys != null) return Boolean.parseBoolean(sys);
-        return "true".equalsIgnoreCase(Telemetry.setting("auto_update", "true"));
+        return configuredEnabled;
     }
 
     private boolean alreadyPending(String projectId) {

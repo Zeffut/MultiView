@@ -35,6 +35,15 @@ public final class JanitorMain {
             Path staged = "-".equals(args[i + 1]) ? null : Path.of(args[i + 1]);
             Path target = "-".equals(args[i + 2]) ? null : Path.of(args[i + 2]);
 
+            // Match in-process cleanup safety after the parent exits: do not remove the
+            // sole surviving jar, including when target and old name the same file.
+            if (staged == null) {
+                if (target == null || !Files.isRegularFile(target)) continue;
+                if (old != null && Files.exists(old) && Files.isSameFile(old, target)) continue;
+            } else if (!Files.isRegularFile(staged)) {
+                continue;
+            }
+
             if (old != null && !deleteWithRetries(old)) {
                 // Old jar still locked: leave the staged file in place so the next game run can
                 // retry the swap, and DO NOT copy the new jar (avoids duplicate mod ids).
