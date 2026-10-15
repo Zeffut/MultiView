@@ -97,13 +97,19 @@ public final class UpdateService {
     }
 
     private UpdateService() {
-        this.loader = Platform.loader();
-        this.mcVersion = Platform.mcVersion();
-        this.modVersion = Platform.modVersion();
+        this(System.getProperty("autoupdate.mods.dir") != null
+                        ? Path.of(System.getProperty("autoupdate.mods.dir")) : Platform.gameDir().resolve("mods"),
+                Platform.gameDir().resolve(".autoupdate"), Platform.loader(), Platform.mcVersion(), Platform.modVersion());
+    }
+
+    // Loader-free construction for filesystem lifecycle tests; no worker/network is started.
+    UpdateService(Path modsDir, Path workDir, String loader, String mcVersion, String modVersion) {
+        this.loader = loader;
+        this.mcVersion = mcVersion;
+        this.modVersion = modVersion;
         this.api = new ModrinthApi(modVersion);
-        String dirOverride = System.getProperty("autoupdate.mods.dir");
-        this.modsDir = dirOverride != null ? Path.of(dirOverride) : Platform.gameDir().resolve("mods");
-        this.workDir = Platform.gameDir().resolve(".autoupdate");
+        this.modsDir = modsDir;
+        this.workDir = workDir;
         this.stagingDir = workDir.resolve("staging");
         this.stateFile = workDir.resolve("state.json");
     }
@@ -213,20 +219,24 @@ public final class UpdateService {
 
     private void reconcilePreviousSession() {
         List<Pending> previous = loadState();
+        // Reconciliation replaces the in-memory snapshot, including on repeated invocation.
+        pendings.clear();
         if (previous.isEmpty()) return;
         for (Pending p : previous) {
             boolean oldGone = p.oldJar == null || !Files.exists(Path.of(p.oldJar));
             boolean targetThere = Files.exists(Path.of(p.targetJar));
-            Path staged = Path.of(p.stagedJar);
+            Path staged = p.stagedJar != null ? Path.of(p.stagedJar) : null;
             if (oldGone && targetThere) {
                 // Swap landed: report it and clean any staging leftover (janitor copy path).
-                try { Files.deleteIfExists(staged); } catch (Exception ignored) {}
+                if (staged != null) {
+                    try { Files.deleteIfExists(staged); } catch (Exception ignored) {}
+                }
                 LOG.info("[AutoUpdate] update applied: {} {} -> {}", label(p), p.from, p.to);
                 emit("update_applied", Map.of(
                         "project_id", p.projectId,
                         "project_slug", p.slug != null ? p.slug : "unknown",
                         "from_version", p.from, "to_version", p.to));
-            } else if (!oldGone && Files.exists(staged)) {
+            } else if (staged != null && Files.exists(staged)) {
                 // Swap did not happen (crash / locked file): retry at this session's shutdown.
                 pendings.add(p);
                 LOG.info("[AutoUpdate] retrying pending update for {} at next shutdown", label(p));
@@ -246,6 +256,17 @@ public final class UpdateService {
         List<Pending> forJanitor = new ArrayList<>();
         for (Pending p : pendings) {
             try {
+                // A cleanup-only job must never delete the last usable jar if the target
+                // disappeared since reconciliation (or aliases the old path).
+                Path target = Path.of(p.targetJar);
+                if (p.stagedJar == null) {
+                    if (!Files.isRegularFile(target)) continue;
+                    if (p.oldJar != null && Files.exists(Path.of(p.oldJar))
+                            && Files.isSameFile(Path.of(p.oldJar), target)) continue;
+                } else if (!Files.isRegularFile(Path.of(p.stagedJar))) {
+                    // Already applied, or staging was lost: repeated shutdown is a no-op.
+                    continue;
+                }
                 if (p.oldJar != null) Files.deleteIfExists(Path.of(p.oldJar));
                 if (p.stagedJar != null) {
                     Files.move(Path.of(p.stagedJar), Path.of(p.targetJar),
