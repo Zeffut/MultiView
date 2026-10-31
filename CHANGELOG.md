@@ -4,6 +4,13 @@ All notable changes are listed here. Format based on [Keep a Changelog](https://
 
 ## Unreleased
 
+## [0.5.1] — 2026-10-31
+
+### Changed
+- Less telemetry sent: the anonymous session ping now fires once at startup and then hourly
+  (instead of every 15 minutes), and the background auto-updater only reports checks that found
+  an update or failed.
+
 ## [0.5.0] — 2026-09-04
 
 ### Added

@@ -40,6 +40,8 @@ public final class TelemetryContext {
         p.put(EventNames.PROP_OS_ARCH, System.getProperty("os.arch", "unknown"));
         p.put(EventNames.PROP_LOCALE, java.util.Locale.getDefault().toLanguageTag());
         p.put(EventNames.PROP_UI_CAPABILITY, uiCapability);
+        // Anonymous installs: no person profiles needed (cheaper PostHog ingestion).
+        p.put("$process_person_profile", false);
         return new TelemetryContext(p, java.util.UUID.randomUUID().toString());
     }
 

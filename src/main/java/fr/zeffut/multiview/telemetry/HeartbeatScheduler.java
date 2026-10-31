@@ -6,7 +6,10 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** Fires {@code session_heartbeat} every 15 min while the game runs. Daemon thread. */
+/**
+ * Fires {@code session_heartbeat} once at startup (keeps daily-active counts accurate), then every
+ * 60 min while the game runs. Daemon thread.
+ */
 public final class HeartbeatScheduler {
     private static final ScheduledExecutorService EXEC =
             Executors.newSingleThreadScheduledExecutor(r -> {
@@ -25,6 +28,6 @@ public final class HeartbeatScheduler {
         EXEC.scheduleAtFixedRate(() ->
                 Telemetry.capture(EventNames.EVT_SESSION_HEARTBEAT,
                         Map.of("heartbeat_index", COUNT.incrementAndGet())),
-                15, 15, TimeUnit.MINUTES);
+                0, 60, TimeUnit.MINUTES);
     }
 }

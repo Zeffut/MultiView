@@ -41,24 +41,17 @@ ARTIFACT_DIR="${ARTIFACT_DIR:-build/libs}"
 
 # Changelog for this release (Modrinth markdown). Edit per release.
 CHANGELOG=$(cat <<'EOF'
-## 0.5.0
-
-### Added
-- Stable Minecraft 26.2 support with Flashback 0.43.2.
-- **Silent background auto-update.** MultiView now keeps itself — and other Zeffut Modrinth mods present in your `mods/` folder — up to date automatically. On startup it hashes the local jars, asks Modrinth for the latest build matching your Minecraft version and loader, downloads verified updates, and swaps them in at game shutdown (a detached helper finishes the swap if a jar is still locked, e.g. on Windows). It runs entirely in the background. Opt-out with `auto_update: false` in `config/multiview-telemetry.json` or `-Dautoupdate.enabled=false`; scope it with the `update_owner`, `update_all`, and `update_exclude` settings.
+## 0.5.1
 
 ### Changed
-- **Multi-row selection** replaces the per-replay checkboxes: left-click replay rows to build the merge set (selected rows are highlighted), double-click still opens a replay, and a single selection keeps the Flashback Open/Edit/Delete buttons working.
-- Removed the first-run telemetry chat message. Telemetry stays anonymous and opt-out via `/mv telemetry off` (and `-Dmultiview.telemetry=false`), documented in the README.
-
-### Fixed
-- The **Merge** button no longer overlaps the Flashback search/sort row and resizes responsively with the window.
-- The **Merge** button is correctly greyed out when the selected replays are not from the same recording moment (derived from the immutable replay file name, not the file last-modified time) and for empty (0-tick) replays.
+- Less telemetry sent: the anonymous session ping now fires once at startup and then hourly
+  (instead of every 15 minutes), and the background auto-updater only reports checks that found
+  an update or failed.
 EOF
 )
 
 # range_key : jar suffix / dist filename
-RANGES=("1.21.11" "1.21.9" "26.1" "26.2")
+RANGES=("1.21.11" "1.21.9" "26.1" "26.2" "26.3")
 
 for range in "${RANGES[@]}"; do
     jar="${ARTIFACT_DIR}/multiview-${VERSION}-mc${range}.jar"
@@ -100,12 +93,13 @@ if prior:
     loaders = prior["loaders"]
 else:
     # Fallback defaults if no prior version of this range exists.
-    label = {"1.21.11": "MC 1.21.11", "1.21.9": "MC 1.21.9 / 1.21.10", "26.1": "MC 26.1", "26.2": "MC 26.2"}.get(rng, f"MC {rng}")
+    label = {"1.21.11": "MC 1.21.11", "1.21.9": "MC 1.21.9 / 1.21.10", "26.1": "MC 26.1", "26.2": "MC 26.2", "26.3": "MC 26.3"}.get(rng, f"MC {rng}")
     name = f"MultiView {version} — {label}"
     game_versions = {"1.21.11": ["1.21.11"],
                      "1.21.9": ["1.21.9", "1.21.10"],
                      "26.1": ["26.1", "26.1.1", "26.1.2"],
-                     "26.2": ["26.2"]}.get(rng, [rng])
+                     "26.2": ["26.2"],
+                     "26.3": ["26.3"]}.get(rng, [rng])
     deps = [{"project_id": "2sJTwAvJ", "dependency_type": "required"}]
     loaders = ["fabric"]
 

@@ -154,6 +154,7 @@ public final class UpdateService {
             }
 
             int updatesFound = 0;
+            int stageFailures = 0;
             for (Map.Entry<String, ModrinthApi.LatestVersion> entry : latest.entrySet()) {
                 String localHash = entry.getKey();
                 ModrinthApi.LatestVersion lv = entry.getValue();
@@ -184,6 +185,7 @@ public final class UpdateService {
                             "to_version", lv.versionNumber()));
                 } catch (Exception e) {
                     LOG.warn("[AutoUpdate] failed to stage update for {}: {}", lv.projectId(), e.toString());
+                    stageFailures++;
                     emit("update_failed", Map.of(
                             "project_id", lv.projectId(), "stage", "download", "reason", e.toString()));
                 }
@@ -194,11 +196,16 @@ public final class UpdateService {
                 Runtime.getRuntime().addShutdownHook(new Thread(this::applyAll, "autoupdate-swap"));
             }
 
-            emit("check_completed", Map.of(
-                    "scanned", jarsByHash.size(),
-                    "matched", latest.size(),
-                    "updates_found", updatesFound,
-                    "duration_ms", System.currentTimeMillis() - startedAt));
+            // Only report checks that found something or hit a failure: a successful check with
+            // nothing to update sends no event (keeps telemetry volume low).
+            if (updatesFound > 0 || stageFailures > 0) {
+                emit("check_completed", Map.of(
+                        "scanned", jarsByHash.size(),
+                        "matched", latest.size(),
+                        "updates_found", updatesFound,
+                        "stage_failures", stageFailures,
+                        "duration_ms", System.currentTimeMillis() - startedAt));
+            }
             LOG.info("[AutoUpdate] check completed: {} jars scanned, {} matched on Modrinth, "
                     + "{} update(s) staged ({} ms)", jarsByHash.size(), latest.size(), updatesFound,
                     System.currentTimeMillis() - startedAt);
@@ -206,6 +213,9 @@ public final class UpdateService {
             LOG.warn("[AutoUpdate] update check failed: {}", t.toString());
             emit("update_failed", Map.of(
                     "stage", "check", "reason", t.toString()));
+            emit("check_completed", Map.of(
+                    "failed", true,
+                    "duration_ms", System.currentTimeMillis() - startedAt));
         }
     }
 
