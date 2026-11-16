@@ -214,13 +214,14 @@ public final class SecondaryPlayerSynthesizer {
      * @param uuid      the secondary player's UUID (from CreateLocalPlayer)
      * @return raw payload bytes, or {@code null} on failure
      */
-    private EntityType<?> playerEntityType() throws ReflectiveOperationException {
-        try {
-            return (EntityType<?>) EntityType.class.getField("PLAYER").get(null);
-        } catch (NoSuchFieldException absentIn26_2) {
-            Class<?> types = Class.forName("net.minecraft.world.entity.EntityTypes");
-            return (EntityType<?>) types.getField("PLAYER").get(null);
-        }
+    private EntityType<?> playerEntityType() {
+        // Registry keys are stable in production. Reflective Mojang class/field
+        // names are not remapped by Loom on the obfuscated 1.21.x runtimes.
+        var registry = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE;
+        var key = registry.keySet().stream()
+                .filter(id -> "minecraft:player".equals(id.toString()))
+                .findFirst().orElseThrow(() -> new IllegalStateException("Missing player entity type"));
+        return registry.getValue(key);
     }
 
     public byte[] synthesizeAddEntity(int sourceIdx, UUID uuid) {

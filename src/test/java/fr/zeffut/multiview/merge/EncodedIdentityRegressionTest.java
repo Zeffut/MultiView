@@ -19,6 +19,21 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class EncodedIdentityRegressionTest {
     @BeforeAll static void bootstrap() { SharedConstants.tryDetectVersion(); Bootstrap.bootStrap(); }
+    @Test void syntheticPlayerUsesRegisteredPlayerEntityType() {
+        UUID uuid = UUID.randomUUID();
+        var synth = new SecondaryPlayerSynthesizer(new IdRemapper());
+        byte[] encoded = synth.synthesizeAddEntity(0, uuid);
+        assertNotNull(encoded);
+        ByteBuf raw = Unpooled.wrappedBuffer(encoded);
+        try {
+            assertEquals(GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_ADD_ENTITY), VarInts.readVarInt(raw));
+            var packet = ClientboundAddEntityPacket.STREAM_CODEC.decode(new RegistryFriendlyByteBuf(raw,
+                    RegistryAccess.fromRegistryOfRegistries(BuiltInRegistries.REGISTRY)));
+            assertEquals("minecraft:player", BuiltInRegistries.ENTITY_TYPE.getKey(packet.getType()).toString());
+            assertEquals(uuid, packet.getUUID());
+            assertEquals(0, raw.readableBytes());
+        } finally { raw.release(); }
+    }
     record Fixture(IdRemapper ids, EntityMerger merger, EntityPacketRewriter rewriter) {}
     private Fixture fixture() {
         IdRemapper ids = new IdRemapper(); SourcePovTracker pov = new SourcePovTracker(2);
