@@ -203,6 +203,7 @@ public final class EntityPacketRewriter {
      * @return rewritten payload bytes
      */
     public byte[] rewrite(int sourceIdx, int tickAbs, byte[] payload) {
+        referenceTick = tickAbs;
         // If GameProtocols was not available, fall through to passthrough
         if (fallbackMode) return payload;
 
@@ -219,7 +220,7 @@ public final class EntityPacketRewriter {
                 if (!addEntityDecodeAvailable) return payload;
                 return rewriteAddEntity(sourceIdx, tickAbs, payload);
             } else if (pid == idRemoveEntities) {
-                return rewriteRemoveEntities(sourceIdx, payload);
+                return rewriteRemoveEntities(sourceIdx, tickAbs, payload);
             } else if (pid == idSetEntityLink) {
                 return rewriteSetEntityLink(sourceIdx, payload);
             } else if (pid == idSetPassengers) {
@@ -237,6 +238,13 @@ public final class EntityPacketRewriter {
                 return rewriteSingleEntityId(sourceIdx, payload);
             }
         } catch (Exception e) {
+            // AddEntity mutates identity/observation state. Returning the original
+            // local-ID packet after a failure would produce an inconsistent replay.
+            if (e instanceof EntityIdentityIndex.ResolutionFailure failure) throw failure;
+            if (pid == idAddEntity) {
+                throw new IllegalStateException("Failed to rewrite AddEntity from source "
+                        + sourceIdx + " at tick " + tickAbs, e);
+            }
             // If rewriting fails (e.g. entity not yet registered), pass through. The same
             // packet/source pair frequently fails repeatedly (every tick); rate-limit the
             // warning to avoid swamping latest.log with tens of thousands of identical lines.
@@ -248,6 +256,56 @@ public final class EntityPacketRewriter {
             }
             return payload;
         }
+    }
+
+    private EntityIdentityIndex identityIndex;
+    private int referenceTick;
+    private final java.util.Map<Integer, Integer> loginPlayerIds = new java.util.HashMap<>();
+    public int indexedPlayerId(int source) { return loginPlayerIds.getOrDefault(source, -1); }
+    public void bindPrimaryPlayer(int source, UUID uuid) {
+        int id = indexedPlayerId(source);
+        if (id < 0) throw new EntityIdentityIndex.ResolutionFailure("Missing primary login player ID");
+        entityMerger.bindPrimaryIdentity(uuid, id);
+    }
+    public void observePrimaryPlayer(int source, int tick, byte[] payload) {
+        UUID uuid = SecondaryPlayerSynthesizer.extractUuid(payload);
+        if (uuid == null) throw new EntityIdentityIndex.ResolutionFailure("Missing primary player UUID");
+        int global = entityMerger.registerAddEntity(source, indexedPlayerId(source), uuid,
+                "minecraft:player", tick, 0, 0, 0);
+        entityMerger.shouldEmitAddEntity(global); // CreateLocalPlayer is the actual spawn.
+        recordLocalPlayerUuid(source, payload);
+    }
+    public void beginIdentityIndex() { identityIndex = new EntityIdentityIndex(); }
+    public void indexIdentity(int source, int local, int tick, UUID uuid) {
+        identityIndex.add(source, local, tick, uuid);
+        entityMerger.reserveIdentity(uuid);
+    }
+    /** Decode only identity-bearing packets; no observations are made in this pass. */
+    public void indexGamePacket(int source, int tick, byte[] payload) {
+        if (fallbackMode || payload.length == 0) return;
+        int pid = readFirstVarInt(payload);
+        int loginId = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_LOGIN);
+        if (pid == loginId) {
+            ByteBuf login = Unpooled.wrappedBuffer(payload);
+            try { readVarIntFromBuf(login); loginPlayerIds.put(source, login.readInt()); }
+            finally { login.release(); }
+            return;
+        }
+        if (pid != idAddEntity && pid != idRemoveEntities) return;
+        ByteBuf raw = Unpooled.wrappedBuffer(payload);
+        try {
+            readVarIntFromBuf(raw);
+            if (pid == idAddEntity) {
+                if (!addEntityDecodeAvailable) throw new EntityIdentityIndex.ResolutionFailure("Entity registry unavailable for identity prepass");
+                ClientboundAddEntityPacket spawn = ClientboundAddEntityPacket.STREAM_CODEC.decode(
+                        new RegistryFriendlyByteBuf(raw, registryManager));
+                indexIdentity(source, spawn.getId(), tick, spawn.getUUID());
+            } else {
+                int count = VarInts.readVarInt(raw);
+                if (count < 0 || count > raw.readableBytes()) throw new IllegalArgumentException("Invalid remove count");
+                for (int i = 0; i < count; i++) identityIndex.remove(source, VarInts.readVarInt(raw), tick);
+            }
+        } finally { raw.release(); }
     }
 
     /** Per-(pid, sourceIdx) failure counter — used to rate-limit the rewrite WARN. */
@@ -275,6 +333,7 @@ public final class EntityPacketRewriter {
      * whether to substitute it.
      */
     public byte[] processMoveEntities(int sourceIdx, int tickAbs, byte[] payload) {
+        referenceTick = tickAbs;
         if (fallbackMode) return payload;
         int localEid = localPlayerEntityId[sourceIdx];
 
@@ -286,6 +345,7 @@ public final class EntityPacketRewriter {
                         }
                     });
         } catch (Exception ex) {
+            if (ex instanceof EntityIdentityIndex.ResolutionFailure failure) throw failure;
             long key = (((long) -1) << 32) | (sourceIdx & 0xFFFFFFFFL);
             int n = rewriteFailureCounts.merge(key, 1, Integer::sum);
             if (n == 1 || n == 100 || n == 10_000) {
@@ -334,6 +394,19 @@ public final class EntityPacketRewriter {
         // Get entity type as string (e.g. "minecraft:zombie")
         String typeStr = BuiltInRegistries.ENTITY_TYPE.getKey(spawn.getType()).toString();
 
+        // Validate the fishing-hook dependency before touching POV, identity or lifecycle.
+        int spawnData = rewriteProjectileOwner(typeStr, localId, spawn.getData(),
+                id -> idRemapper.contains(sourceIdx, id),
+                id -> idRemapper.remap(sourceIdx, id),
+                entityMerger::hasEmittedPlayer,
+                id -> {
+                    int owner = safeRemap(sourceIdx, id);
+                    if (!entityMerger.hasEmittedEntity(owner)) {
+                        throw new IllegalStateException("Projectile owner is not yet emitted: localId=" + id);
+                    }
+                    return owner;
+                });
+
         // Check if this is the local player (UUID matches CreatePlayer UUID)
         if (uuid != null && uuid.equals(localPlayerUuid[sourceIdx])) {
             localPlayerEntityId[sourceIdx] = localId;
@@ -343,12 +416,13 @@ public final class EntityPacketRewriter {
 
         // Register with EntityMerger — gets globalId (new or merged)
         int globalId = entityMerger.registerAddEntity(sourceIdx, localId, uuid, typeStr, tickAbs, x, y, z);
+        if (!entityMerger.shouldEmitAddEntity(globalId)) return null;
 
         // Reconstruct the packet with globalId
         ClientboundAddEntityPacket remapped = new ClientboundAddEntityPacket(
                 globalId, uuid, x, y, z,
                 spawn.getYRot(), spawn.getXRot(),
-                spawn.getType(), spawn.getData(),
+                spawn.getType(), spawnData,
                 spawn.getMovement(), spawn.getYHeadRot()
         );
 
@@ -367,6 +441,37 @@ public final class EntityPacketRewriter {
         return result;
     }
 
+    /** Vanilla classes inspected in 1.21.11, 26.2 and 26.3 use a raw owner ID.
+     * Unknown/modded entity types are deliberately not inferred from spawn data. */
+    static int rewriteProjectileOwner(String type, int localId, int data,
+                                      java.util.function.IntPredicate hasMapping,
+                                      IntUnaryOperator existingMapping,
+                                      java.util.function.IntPredicate emittedPlayer,
+                                      IntUnaryOperator remapOwner) {
+        boolean hook = "minecraft:fishing_bobber".equals(type);
+        boolean projectile = switch (type) {
+            case "minecraft:arrow", "minecraft:breeze_wind_charge", "minecraft:dragon_fireball",
+                 "minecraft:egg", "minecraft:ender_pearl", "minecraft:experience_bottle",
+                 "minecraft:fireball", "minecraft:firework_rocket", "minecraft:llama_spit",
+                 "minecraft:splash_potion", "minecraft:lingering_potion", "minecraft:shulker_bullet",
+                 "minecraft:small_fireball", "minecraft:snowball", "minecraft:spectral_arrow",
+                 "minecraft:trident", "minecraft:wind_charge", "minecraft:wither_skull",
+                 "minecraft:fishing_bobber" -> true;
+            default -> false;
+        };
+        if (!projectile) return data;
+        if (hook) {
+            // Includes the vanilla no-owner fallback (the hook's own ID): it is
+            // not a spawned player and therefore must never be emitted as a hook.
+            if (data == 0 || data == localId || !hasMapping.test(data)
+                    || !emittedPlayer.test(existingMapping.applyAsInt(data))) {
+                throw new IllegalStateException("Fishing hook owner is not an already emitted player: localId=" + data);
+            }
+            return existingMapping.applyAsInt(data);
+        }
+        return data == 0 ? 0 : remapOwner.applyAsInt(data);
+    }
+
     /**
      * Rewrites REMOVE_ENTITIES (EntitiesDestroyS2CPacket).
      * Format: VarInt packetId + VarInt count + [count x VarInt entityId]
@@ -374,7 +479,25 @@ public final class EntityPacketRewriter {
      * <p>IDs that have no mapping (not yet registered) are remapped via {@code assign}
      * to avoid dropping the packet — the global ID will be unused but harmless.
      */
-    private byte[] rewriteRemoveEntities(int sourceIdx, byte[] payload) {
+    /** Output explicit despawns at source boundaries, including inside empty gaps. */
+    public byte[] finishSourcesThrough(int tickAbs) {
+        java.util.List<Integer> removed = entityMerger.endSourcesThrough(tickAbs);
+        if (removed.isEmpty()) return null;
+        if (idRemoveEntities < 0) throw new IllegalStateException("RemoveEntities codec unavailable");
+        ByteBuf out = Unpooled.buffer();
+        try {
+            VarInts.writeVarInt(out, idRemoveEntities);
+            VarInts.writeVarInt(out, removed.size());
+            for (int id : removed) VarInts.writeVarInt(out, id);
+            byte[] bytes = new byte[out.readableBytes()];
+            out.readBytes(bytes);
+            return bytes;
+        } finally {
+            out.release();
+        }
+    }
+
+    private byte[] rewriteRemoveEntities(int sourceIdx, int tickAbs, byte[] payload) {
         ByteBuf in = Unpooled.wrappedBuffer(payload);
 
         // Read packetId
@@ -391,17 +514,21 @@ public final class EntityPacketRewriter {
             localIds[i] = VarInts.readVarInt(in);
         }
 
+        // An observer disappearing is not necessarily an entity disappearing.
+        java.util.List<Integer> removed = new java.util.ArrayList<>();
+        for (int localId : localIds) {
+            int globalId = entityMerger.removeEntity(sourceIdx, localId, tickAbs);
+            if (globalId >= 0) removed.add(globalId);
+        }
+        if (removed.isEmpty()) return null;
+
         // Rebuild payload
         ByteBuf out = Unpooled.buffer(payload.length + 5 * count);
         // packetId
         out.writeBytes(payload, packetIdStart, afterPid - packetIdStart);
         // count
-        VarInts.writeVarInt(out, count);
-        // remapped IDs + unregister to allow same-UUID respawns (player leave→rejoin)
-        for (int localId : localIds) {
-            int globalId = idRemapper.contains(sourceIdx, localId)
-                    ? idRemapper.remap(sourceIdx, localId)
-                    : idRemapper.assign(sourceIdx, localId); // assign if unseen (edge case)
+        VarInts.writeVarInt(out, removed.size());
+        for (int globalId : removed) {
             VarInts.writeVarInt(out, globalId);
         }
 
@@ -608,7 +735,28 @@ public final class EntityPacketRewriter {
         if (idRemapper.contains(sourceIdx, localId)) {
             return idRemapper.remap(sourceIdx, localId);
         }
-        // Entity not registered via AddEntity (e.g. was in snapshot): assign new global ID
+        if (identityIndex != null) {
+            UUID uuid;
+            try {
+                uuid = identityIndex.resolve(sourceIdx, localId, referenceTick);
+            } catch (EntityIdentityIndex.ResolutionFailure ambiguous) {
+                // A post-removal reference cannot be assigned to a future life.
+                // Give it an unused transient ID, and discard the local mapping so
+                // a later spawn is free to bind its genuine UUID.
+                int isolated = idRemapper.assign(sourceIdx, localId);
+                idRemapper.remove(sourceIdx, localId);
+                LOG.debug("Isolated ambiguous post-lifetime reference: {}", ambiguous.getMessage());
+                return isolated;
+            }
+            if (uuid == null) {
+                LOG.debug("Isolated reference without any recorded spawn: source={}, local={}, tick={}",
+                        sourceIdx, localId, referenceTick);
+                return idRemapper.assign(sourceIdx, localId);
+            }
+            int global = entityMerger.reserveIdentity(uuid);
+            idRemapper.assignExisting(sourceIdx, localId, global);
+            return global;
+        }
         return idRemapper.assign(sourceIdx, localId);
     }
 

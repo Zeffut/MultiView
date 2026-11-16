@@ -102,7 +102,7 @@ class MergeUiLayoutTest {
         // Same live session: overlapping recording windows → mergeable.
         assertTrue(MergeUiLayout.allWindowsOverlap(new long[][]{
                 {1000, 5000}, {2000, 6000}, {1500, 4000}}));
-        // One replay from a different day → disjoint → not mergeable.
+        // One replay from a different day → disjoint (still mergeable).
         assertFalse(MergeUiLayout.allWindowsOverlap(new long[][]{
                 {1000, 5000}, {2000, 6000}, {90000, 95000}}));
         // Two windows that merely touch at an endpoint count as disjoint.
@@ -112,6 +112,15 @@ class MergeUiLayoutTest {
         // Fewer than two windows: nothing to contradict.
         assertTrue(MergeUiLayout.allWindowsOverlap(new long[][]{{1000, 5000}}));
         assertTrue(MergeUiLayout.allWindowsOverlap(new long[][]{}));
+    }
+
+    @Test
+    void disjointRecordingsRemainMergeable() {
+        long[][] disjoint = {{1000, 5000}, {90000, 95000}};
+        assertFalse(MergeUiLayout.allWindowsOverlap(disjoint));
+        assertTrue(MergeUiLayout.canMergeSelection(disjoint.length));
+        assertFalse(MergeUiLayout.canMergeSelection(1));
+        assertFalse(MergeUiLayout.canMergeSelection(0));
     }
 
     @Test

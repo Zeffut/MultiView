@@ -19,6 +19,9 @@ public final class IdRemapper {
     private final Map<Long, Integer> mapping = new HashMap<>();
     private int nextGlobalId = GLOBAL_ID_BASE;
 
+    /** Allocate an identity without binding it to a live source observation. */
+    public int allocate() { return nextGlobalId++; }
+
     /** Assigne un nouveau globalId si absent, sinon retourne l'existant. */
     public int assign(int sourceIdx, int localId) {
         return mapping.computeIfAbsent(key(sourceIdx, localId), k -> nextGlobalId++);
@@ -59,6 +62,11 @@ public final class IdRemapper {
     public void removeByGlobalId(java.util.Set<Integer> globalIds) {
         if (globalIds == null || globalIds.isEmpty()) return;
         mapping.values().removeIf(globalIds::contains);
+    }
+
+    /** Discard unresolved reservations when a recording ends. */
+    public void removeSource(int sourceIdx) {
+        mapping.keySet().removeIf(k -> (int) (k >> 32) == sourceIdx);
     }
 
     public int size() { return mapping.size(); }

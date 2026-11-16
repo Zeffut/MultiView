@@ -23,6 +23,26 @@ import static org.junit.jupiter.api.Assertions.*;
  * run in the full Fabric environment.
  */
 class SecondaryPlayerSynthesizerTest {
+    @Test void extractsProfileAfterNonzeroVelocityAndPreservesSignedProperties() {
+        UUID uuid = UUID.fromString("0e15d052-0000-0000-0000-000000000001");
+        var properties = new com.mojang.authlib.properties.PropertyMap(
+                com.google.common.collect.ImmutableMultimap.of("textures", new com.mojang.authlib.properties.Property("textures", "value", "signature")));
+        var expected = new com.mojang.authlib.GameProfile(uuid, "PovBeta", properties);
+        ByteBuf buf = Unpooled.buffer();
+        try {
+            buf.writeLong(uuid.getMostSignificantBits()).writeLong(uuid.getLeastSignificantBits());
+            buf.writeDouble(1).writeDouble(2).writeDouble(3);
+            buf.writeFloat(4).writeFloat(5).writeFloat(6);
+            buf.writeDouble(-1.25).writeDouble(2.5).writeDouble(3.75);
+            net.minecraft.network.codec.ByteBufCodecs.GAME_PROFILE.encode(buf, expected);
+            byte[] payload = new byte[buf.readableBytes()];
+            buf.readBytes(payload);
+            var actual = SecondaryPlayerSynthesizer.extractGameProfile(payload);
+            assertEquals(expected.id(), actual.id());
+            assertEquals(expected.name(), actual.name());
+            assertEquals(expected.properties(), actual.properties());
+        } finally { buf.release(); }
+    }
 
     // -------------------------------------------------------------------------
     // extractUuid — no MC dependency
