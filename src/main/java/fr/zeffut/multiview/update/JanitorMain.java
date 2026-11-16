@@ -4,22 +4,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
-/**
- * Tiny standalone helper process ("janitor"), spawned by {@link UpdateService} at game shutdown
- * when an old mod jar cannot be deleted in-process (Windows keeps loaded jars locked until the
- * JVM dies). No Minecraft, no mod-loader, no telemetry — plain JDK only.
- *
- * <p>Usage: {@code java -cp <autoupdate.jar> fr.zeffut.multiview.update.JanitorMain <parentPid>
- * (<oldJar> <stagedJar> <targetJar>)...} — waits for the parent game process to exit, then for
- * each triple: deletes the old jar (with retries), COPIES the staged jar to its target (copy, not
- * move: the staged jar may be this process's own classpath and thus locked), and best-effort
- * deletes the staged leftover. Empty arguments ("-") skip the corresponding action.
- */
+/** Standalone shutdown helper. Only same-path atomic replacements are permitted;
+ * historical cross-name jobs require manual intervention. Staging is retained for reconciliation.
+ * Both checked SHA-512 v1 and legacy triple argument formats are accepted. */
 public final class JanitorMain {
 
     public static void main(String[] args) throws Exception {
-        if (args.length < 4 || (args.length - 1) % 3 != 0) return;
-        long parentPid = Long.parseLong(args[0]);
+        boolean checked = args.length > 0 && "--sha512-v1".equals(args[0]);
+        int first = checked ? 2 : 1, width = checked ? 4 : 3;
+        if (args.length < first + width || (args.length - first) % width != 0) return;
+        long parentPid = Long.parseLong(args[checked ? 1 : 0]);
 
         // Wait (up to 2 min) for the game process to exit and release its file locks.
         ProcessHandle.of(parentPid).ifPresent(handle -> {
@@ -30,50 +24,61 @@ public final class JanitorMain {
             }
         });
 
-        for (int i = 1; i + 2 < args.length; i += 3) {
+        for (int i = first; i + 2 < args.length; i += width) {
             Path old = "-".equals(args[i]) ? null : Path.of(args[i]);
             Path staged = "-".equals(args[i + 1]) ? null : Path.of(args[i + 1]);
             Path target = "-".equals(args[i + 2]) ? null : Path.of(args[i + 2]);
+            String expected = checked ? args[i + 3] : null;
 
-            // Match in-process cleanup safety after the parent exits: do not remove the
-            // sole surviving jar, including when target and old name the same file.
-            if (staged == null) {
-                if (target == null || !Files.isRegularFile(target)) continue;
-                if (old != null && Files.exists(old) && Files.isSameFile(old, target)) continue;
-            } else if (!Files.isRegularFile(staged)) {
+            // Never publish a second filename, including through legacy invocations.
+            if (old == null || target == null || !old.toAbsolutePath().normalize()
+                    .equals(target.toAbsolutePath().normalize())) {
+                System.err.println("[AutoUpdate] cross-name job requires manual update; preserved");
                 continue;
             }
-
-            if (old != null && !deleteWithRetries(old)) {
-                // Old jar still locked: leave the staged file in place so the next game run can
-                // retry the swap, and DO NOT copy the new jar (avoids duplicate mod ids).
-                continue;
-            }
-            if (staged != null && target != null && Files.exists(staged)) {
-                try {
-                    Files.copy(staged, target, StandardCopyOption.REPLACE_EXISTING);
-                    deleteWithRetries(staged); // best-effort; leftover is cleaned next run
-                } catch (Exception ignored) {
-                }
+            if (staged == null || !Files.isRegularFile(staged)) continue;
+            try {
+                if (checked) install(staged, target, expected);
+                else install(staged, target); // Legacy protocol has no original expected hash.
+            } catch (Exception failure) {
+                System.err.println("[AutoUpdate] atomic replacement failed; preserved: " + failure);
             }
         }
     }
 
-    private static boolean deleteWithRetries(Path p) {
-        for (int attempt = 0; attempt < 20; attempt++) {
-            try {
-                Files.deleteIfExists(p);
-                return true;
-            } catch (Exception e) {
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    return false;
-                }
+    static void install(Path staged, Path target) throws Exception {
+        install(staged, target, java.util.HexFormat.of().formatHex(hash(staged)));
+    }
+
+    static void install(Path staged, Path target, String expected) throws Exception {
+        if (expected == null || !expected.equals(java.util.HexFormat.of().formatHex(hash(staged))))
+            throw new java.io.IOException("Staged updater checksum mismatch");
+        Path temporary = Files.createTempFile(target.toAbsolutePath().getParent(),
+                ".autoupdate-", ".tmp");
+        try {
+            Files.copy(staged, temporary, StandardCopyOption.REPLACE_EXISTING);
+            try (var channel = java.nio.channels.FileChannel.open(temporary,
+                    java.nio.file.StandardOpenOption.WRITE)) {
+                channel.force(true);
             }
+            if (!expected.equals(java.util.HexFormat.of().formatHex(hash(temporary)))) {
+                throw new java.io.IOException("Updater copy integrity mismatch");
+            }
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(temporary);
         }
-        return false;
+    }
+
+    private static byte[] hash(Path path) throws Exception {
+        var digest = java.security.MessageDigest.getInstance("SHA-512");
+        try (var in = Files.newInputStream(path)) {
+            byte[] buffer = new byte[65536];
+            int n;
+            while ((n = in.read(buffer)) != -1) digest.update(buffer, 0, n);
+        }
+        return digest.digest();
     }
 
     private JanitorMain() {}

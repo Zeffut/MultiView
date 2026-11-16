@@ -27,13 +27,16 @@ class UpdateServiceRunExitTest {
         boolean enabled = !mode.equals("false") && !mode.equals("config-off");
         Path mods = Files.createDirectories(dir.resolve("mods"));
         Path work = Files.createDirectories(dir.resolve(".autoupdate"));
-        Path old = mods.resolve("old.jar"), target = mods.resolve("target.jar"), stage = work.resolve("stage.jar");
+        Path old = mods.resolve("old.jar"), target = staged ? old : mods.resolve("target.jar"), stage = work.resolve("stage.jar");
         Files.writeString(old, "old-usable");
         if (staged) Files.writeString(stage, "target-usable");
         else Files.writeString(target, "target-usable");
         Map<String, Object> pending = new HashMap<>(Map.of("project_id", "test", "slug", "test", "from", "1", "to", "2",
                 "old", old.toString(), "target", target.toString()));
         pending.put("staged", staged ? stage.toString() : null);
+        pending.put("sha512", java.util.HexFormat.of().formatHex(
+                java.security.MessageDigest.getInstance("SHA-512").digest(
+                        "target-usable".getBytes(java.nio.charset.StandardCharsets.UTF_8))));
         Files.writeString(work.resolve("state.json"), new Gson().toJson(Map.of("pending", List.of(pending))));
         String cp = List.of(RunExitProbe.class, UpdateService.class, Gson.class, Logger.class).stream()
                 .map(c -> { try { return Path.of(c.getProtectionDomain().getCodeSource().getLocation().toURI()).toString(); }
@@ -48,8 +51,9 @@ class UpdateServiceRunExitTest {
             if (!exited) child.destroyForcibly();
             assertTrue(exited, "child timed out");
             assertEquals(0, child.exitValue(), Files.readString(log));
-            assertEquals(!enabled, Files.exists(old), Files.readString(log));
-            assertEquals("target-usable", Files.readString(target));
+            assertTrue(Files.exists(old), Files.readString(log));
+            assertEquals(staged && enabled ? "target-usable" : "old-usable", Files.readString(old));
+            if (!staged) assertEquals("target-usable", Files.readString(target));
         }
     }
 }

@@ -39,8 +39,8 @@ import org.slf4j.LoggerFactory;
  *       the configured account (default {@code Zeffut}) are eligible unless {@code update_all};</li>
  *   <li><b>Stage</b> — download new jars into {@code .autoupdate/staging/} and verify their
  *       SHA-512 (never two copies of one mod inside {@code mods/});</li>
- *   <li><b>Swap at shutdown</b> — a JVM shutdown hook deletes the old jar then moves the staged
- *       one into {@code mods/}; if the old jar is locked (Windows), a detached
+ *   <li><b>Swap at shutdown</b> — a JVM shutdown hook atomically replaces the existing jar at the same path;
+ *       if replacement is locked (Windows), a detached
  *       {@link JanitorMain} process finishes the swap after the game exits.</li>
  * </ol>
  *
@@ -80,7 +80,42 @@ public final class UpdateService {
     private final List<Pending> pendings = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private record Pending(String projectId, String slug, String from, String to,
-                           String oldJar, String stagedJar, String targetJar) {}
+                           String oldJar, String stagedJar, String targetJar, String expectedSha512) {
+        Pending(String projectId, String slug, String from, String to,
+                String oldJar, String stagedJar, String targetJar) {
+            this(projectId, slug, from, to, oldJar, stagedJar, targetJar, null);
+        }
+    }
+
+    private boolean shuttingDown;
+
+    // Publication and shutdown share this monitor: no job is visible before its journal.
+    private synchronized void registerPending(Pending p) throws Exception {
+        if (shuttingDown) throw new IllegalStateException("shutdown already started");
+        Pending durable = new Pending(p.projectId, p.slug, p.from, p.to,
+                p.oldJar, p.stagedJar, p.targetJar, sha512(Path.of(p.stagedJar)));
+        pendings.add(durable);
+        try {
+            saveState();
+        } catch (RuntimeException e) {
+            pendings.remove(durable);
+            throw e;
+        }
+    }
+
+    private boolean validTarget(Pending p) {
+        try {
+            String expected = p.expectedSha512;
+            if (expected == null && p.stagedJar != null
+                    && Files.isRegularFile(Path.of(p.stagedJar))) {
+                expected = sha512(Path.of(p.stagedJar));
+            }
+            return expected != null && Files.isRegularFile(Path.of(p.targetJar))
+                    && expected.equals(sha512(Path.of(p.targetJar)));
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
     public static void start() {
         // First host mod to start wins; every other embedded copy stays dormant.
@@ -182,15 +217,15 @@ public final class UpdateService {
                 if (lv.sha512().equals(localHash)) continue;                    // already latest
                 if (alreadyPending(lv.projectId())) continue;
 
-                Path target = modsDir.resolve(lv.fileName());
-                if (Files.exists(target)) continue;                             // already present
+                // Keep the installed filename: publishing another name can prevent loader startup.
+                Path target = localJar;
 
                 try {
                     Path staged = download(lv);
                     Pending pending = new Pending(lv.projectId(), slug, fileVersionLabel(localJar),
                             lv.versionNumber(), localJar.toAbsolutePath().toString(),
                             staged.toAbsolutePath().toString(), target.toAbsolutePath().toString());
-                    pendings.add(pending);
+                    registerPending(pending);
                     updatesFound++;
                     LOG.info("[AutoUpdate] staged update for {}: {} -> {} ({})",
                             slug != null ? slug : lv.projectId(), pending.from, pending.to, lv.fileName());
@@ -239,10 +274,22 @@ public final class UpdateService {
         pendings.clear();
         if (previous.isEmpty()) return;
         for (Pending p : previous) {
+            if (p.expectedSha512 == null && p.stagedJar != null
+                    && Files.isRegularFile(Path.of(p.stagedJar))) {
+                try {
+                    p = new Pending(p.projectId, p.slug, p.from, p.to, p.oldJar,
+                            p.stagedJar, p.targetJar, sha512(Path.of(p.stagedJar)));
+                } catch (Exception unreadable) {
+                    pendings.add(p);
+                    continue;
+                }
+            }
             boolean oldGone = p.oldJar == null || !Files.exists(Path.of(p.oldJar));
             boolean targetThere = Files.exists(Path.of(p.targetJar));
             Path staged = p.stagedJar != null ? Path.of(p.stagedJar) : null;
-            if (oldGone && targetThere) {
+            boolean samePath = p.oldJar != null && Path.of(p.oldJar).toAbsolutePath().normalize()
+                    .equals(Path.of(p.targetJar).toAbsolutePath().normalize());
+            if ((oldGone || samePath) && targetThere && validTarget(p)) {
                 // Swap landed: report it and clean any staging leftover (janitor copy path).
                 if (staged != null) {
                     try { Files.deleteIfExists(staged); } catch (Exception ignored) {}
@@ -252,42 +299,34 @@ public final class UpdateService {
                         "project_id", p.projectId,
                         "project_slug", p.slug != null ? p.slug : "unknown",
                         "from_version", p.from, "to_version", p.to));
-            } else if (staged != null && Files.exists(staged)) {
-                // Swap did not happen (crash / locked file): retry at this session's shutdown.
+            } else if (!samePath) {
+                // Historical cross-name jobs cannot be repaired safely after loader discovery.
                 pendings.add(p);
-                LOG.info("[AutoUpdate] retrying pending update for {} at next shutdown", label(p));
-            } else if (!oldGone && targetThere) {
-                // Both jars present (partial swap): delete the old one at shutdown.
-                pendings.add(new Pending(p.projectId, p.slug, p.from, p.to, p.oldJar, null, p.targetJar));
-                LOG.warn("[AutoUpdate] duplicate jars for {}; old jar will be removed at shutdown", label(p));
+                LOG.warn("[AutoUpdate] {} requires manual update; preserving jars, staging and journal", label(p));
+            } else {
+                pendings.add(p);
+                LOG.info("[AutoUpdate] pending same-path update for {}", label(p));
             }
-            // else: nothing usable left, drop silently.
         }
         saveState();
     }
 
     // ---- shutdown swap -------------------------------------------------------------------------
 
-    private void applyAll() {
+    private synchronized void applyAll() {
+        shuttingDown = true;
         List<Pending> forJanitor = new ArrayList<>();
         for (Pending p : pendings) {
             try {
-                // A cleanup-only job must never delete the last usable jar if the target
-                // disappeared since reconciliation (or aliases the old path).
                 Path target = Path.of(p.targetJar);
-                if (p.stagedJar == null) {
-                    if (!Files.isRegularFile(target)) continue;
-                    if (p.oldJar != null && Files.exists(Path.of(p.oldJar))
-                            && Files.isSameFile(Path.of(p.oldJar), target)) continue;
-                } else if (!Files.isRegularFile(Path.of(p.stagedJar))) {
-                    // Already applied, or staging was lost: repeated shutdown is a no-op.
+                if (p.oldJar == null || !Path.of(p.oldJar).toAbsolutePath().normalize()
+                        .equals(target.toAbsolutePath().normalize())) {
+                    LOG.warn("[AutoUpdate] {} requires manual update; refusing cross-name swap", label(p));
                     continue;
                 }
-                if (p.oldJar != null) Files.deleteIfExists(Path.of(p.oldJar));
-                if (p.stagedJar != null) {
-                    Files.move(Path.of(p.stagedJar), Path.of(p.targetJar),
-                            StandardCopyOption.REPLACE_EXISTING);
-                }
+                if (p.stagedJar == null || !Files.isRegularFile(Path.of(p.stagedJar))
+                        || p.expectedSha512 == null) continue;
+                JanitorMain.install(Path.of(p.stagedJar), target, p.expectedSha512);
             } catch (Exception lockedOrFailed) {
                 forJanitor.add(p);
             }
@@ -304,11 +343,12 @@ public final class UpdateService {
                             ? "java.exe" : "java").toString();
             List<String> cmd = new ArrayList<>(List.of(javaBin, "-cp", classpath,
                     JanitorMain.class.getName(),
-                    String.valueOf(ProcessHandle.current().pid())));
+                    "--sha512-v1", String.valueOf(ProcessHandle.current().pid())));
             for (Pending p : jobs) {
                 cmd.add(p.oldJar != null ? p.oldJar : "-");
                 cmd.add(p.stagedJar != null ? p.stagedJar : "-");
                 cmd.add(p.targetJar != null ? p.targetJar : "-");
+                cmd.add(p.expectedSha512 != null ? p.expectedSha512 : "-");
             }
             new ProcessBuilder(cmd)
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
@@ -319,31 +359,29 @@ public final class UpdateService {
         }
     }
 
-    /**
-     * Classpath for the janitor process: this (host) mod's own jar, which embeds JanitorMain.
-     * When the host mod is updating ITSELF, its current jar is among the files to delete — the
-     * janitor must instead run from the freshly STAGED jar (the new version also embeds
-     * JanitorMain and outlives the old one). Returns null in dev environments (classes dir,
-     * no jar to exec).
-     */
+    /** Extract the currently running, standalone helper into a private recovery JAR.
+     * The helper must not depend on bytecode supplied by the staged update. */
     private String janitorClasspath(List<Pending> jobs) {
-        Path self = null;
+        // Copy our known helper, not untrusted/new-version executable code, before shutdown.
+        // The standalone helper has no dependencies besides the JDK.
         try {
-            self = Path.of(UpdateService.class.getProtectionDomain()
-                    .getCodeSource().getLocation().toURI()).toAbsolutePath();
-        } catch (Exception ignored) {
-        }
-        if (self != null) {
-            for (Pending p : jobs) {
-                if (p.oldJar != null && p.stagedJar != null
-                        && Path.of(p.oldJar).toAbsolutePath().equals(self)) {
-                    return p.stagedJar; // self-update: run the janitor from the NEW jar
-                }
+            Files.createDirectories(workDir);
+            Path helper = Files.createTempFile(workDir, "janitor-", ".jar");
+            String resource = JanitorMain.class.getName().replace('.', '/') + ".class";
+            try (InputStream in = JanitorMain.class.getClassLoader().getResourceAsStream(resource);
+                 var out = new java.util.jar.JarOutputStream(Files.newOutputStream(helper))) {
+                if (in == null) throw new java.io.IOException("Missing janitor bytecode");
+                out.putNextEntry(new java.util.jar.JarEntry(resource));
+                in.transferTo(out);
+                out.closeEntry();
             }
-            if (self.toString().endsWith(".jar")) return self.toString();
+            return helper.toString();
+        } catch (Exception failure) {
+            LOG.warn("[AutoUpdate] cannot prepare recovery helper", failure);
+            return null;
         }
-        return null;
     }
+
 
     /** Emits an {@code upd_*} event under the shared {@code app=autoupdate} segment. */
     private void emit(String shortName, Map<String, Object> properties) {
@@ -420,14 +458,14 @@ public final class UpdateService {
                 JsonObject o = e.getAsJsonObject();
                 out.add(new Pending(
                         str(o, "project_id"), str(o, "slug"), str(o, "from"), str(o, "to"),
-                        str(o, "old"), str(o, "staged"), str(o, "target")));
+                        str(o, "old"), str(o, "staged"), str(o, "target"), str(o, "sha512")));
             }
         } catch (Exception ignored) {
         }
         return out;
     }
 
-    private void saveState() {
+    private synchronized void saveState() {
         try {
             Files.createDirectories(workDir);
             JsonArray arr = new JsonArray();
@@ -440,12 +478,25 @@ public final class UpdateService {
                 if (p.oldJar != null) o.addProperty("old", p.oldJar);
                 if (p.stagedJar != null) o.addProperty("staged", p.stagedJar);
                 o.addProperty("target", p.targetJar);
+                if (p.expectedSha512 != null) o.addProperty("sha512", p.expectedSha512);
                 arr.add(o);
             }
             JsonObject root = new JsonObject();
             root.add("pending", arr);
-            Files.writeString(stateFile, GSON.toJson(root));
-        } catch (Exception ignored) {
+            Path temporary = Files.createTempFile(workDir, "state-", ".tmp");
+            try {
+                Files.writeString(temporary, GSON.toJson(root));
+                try (var channel = java.nio.channels.FileChannel.open(temporary,
+                        java.nio.file.StandardOpenOption.WRITE)) {
+                    channel.force(true);
+                }
+                Files.move(temporary, stateFile, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+        } catch (Exception failure) {
+            throw new IllegalStateException("Cannot persist updater recovery state", failure);
         }
     }
 
