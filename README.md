@@ -77,7 +77,9 @@ file-modification-time alignment in `TimelineAligner`.
 | --- | --- | --- | --- |
 | 1.21.9 / 1.21.10 | 0.19.2+ | 0.39.x | `0.3.2+mc1.21.9` |
 | 1.21.11 | 0.19.2+ | 0.39.4 | `0.3.2+mc1.21.11` |
-| 26.1 / 26.1.1 / 26.1.2 | 0.19.2+ | 0.40.0 | `0.3.2+mc26.1` |
+| 26.1 / 26.1.1 / 26.1.2 | 0.19.2+ | 0.43.6 | maintenance candidate |
+| 26.2 | 0.19.2+ | 0.43.6 | maintenance candidate |
+| 26.3 | 0.19.3+ | 0.43.6 | maintenance candidate |
 
 Requires Java 21 on 1.21.x and Java 25 on 26.1+. Fabric API is required.
 
@@ -95,20 +97,25 @@ Requires Java 21 on 1.21.x and Java 25 on 26.1+. Fabric API is required.
 
 ## Telemetry & privacy
 
-MultiView sends **anonymous** usage statistics via [PostHog](https://posthog.com) (EU servers)
+MultiView sends **pseudonymous** usage statistics via [PostHog](https://posthog.com) (EU servers)
 to help improve the mod. It is **enabled by default** but fully optional.
 
 **What is collected:** mod/Minecraft/Flashback versions, OS and Java version, locale, which
 features are used, merge counts/durations/sizes/outcomes, and sanitized error reports.
 
 **What is never collected:** player names or UUIDs, world/server names, file paths (only file
-names/sizes), or any replay contents. An anonymous random ID is used — it is not linked to your
-Minecraft account.
+names/sizes), or any replay contents. A persistent random ID links events from the same installation;
+it is not your Minecraft account UUID and does not guarantee anonymity. PostHog sees the network
+IP during a request, even with `$ip: null` in the payload. IP-derived geolocation may be possible
+server-side; current project settings are not verified here.
 
 **How to disable:**
 - In game: `/mv telemetry off` (and `/mv telemetry status` to check).
 - Or set the JVM flag `-Dmultiview.telemetry=false`.
 - Telemetry is automatically disabled in Fabric development environments.
+- Development and JVM exclusions cannot be overridden by `/mv telemetry on` in the same lifecycle.
+  Outside those exclusions, this command is an explicit opt-in; a persisted opt-out remains off
+  across restart until the user explicitly enables it.
 
 ## Known limitations
 
