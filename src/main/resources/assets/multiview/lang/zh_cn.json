@@ -1,0 +1,14 @@
+{
+  "multiview.button.merge_selected": "合并所选录像",
+  "multiview.button.merge_selected.count": "合并 %d 个录像",
+  "multiview.button.merge_selected.no_overlap": "这些录像并非在同一时间录制——它们的服务器游戏时间（gameTime）范围没有重叠。强行合并会导致实体异常（如生物冻结、装备丢失、视角默认等）。请选择时间范围有重叠的录像进行合并。",
+  "multiview.merge_progress.title": "正在合并录像...",
+  "multiview.merge_progress.done": "合并完成！",
+  "multiview.merge_progress.phase.opening": "正在打开源文件",
+  "multiview.merge_progress.phase.aligning": "正在对齐时间轴",
+  "multiview.merge_progress.phase.caches": "正在复制缓存",
+  "multiview.merge_progress.phase.streaming": "正在流式合并",
+  "multiview.merge_progress.phase.metadata": "正在写入元数据",
+  "multiview.merge_progress.phase.packaging": "正在打包 ZIP",
+  "multiview.merge_progress.phase.done": "合并完成"
+}

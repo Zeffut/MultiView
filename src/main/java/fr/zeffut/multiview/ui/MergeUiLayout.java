@@ -61,6 +61,11 @@ public final class MergeUiLayout {
                 && mouseY >= listTop && mouseY <= listBottom;
     }
 
+    /** Selection requires two replays; overlap is not a precondition. */
+    public static boolean canMergeSelection(int count) {
+        return count >= 2;
+    }
+
     /**
      * True if every pair of recording windows overlaps in time — i.e. the replays were recorded
      * during the same real-world moment (a precondition for a meaningful merge). Each window is

@@ -80,6 +80,11 @@ for v in "${versions[@]}"; do
     echo "  MC $v"
     echo "================================================================"
 
+    cp "$ORIG_BACKUP" "$GRADLE_PROPS"
+    if grep -q '^flashback_sha512=' "$props" && ! "$ROOT/scripts/download-flashback.sh" "$v"; then
+        echo "Flashback download failed for $v" >&2
+        exit 1
+    fi
     swap_props "$props"
     # Wipe stale test report so we never read stats from a prior run.
     rm -f "$ROOT/build/test-results/test/TEST-fr.zeffut.multiview.merge.MergeIntegrationTest.xml"
@@ -108,11 +113,12 @@ for v in "${versions[@]}"; do
     #   FAIL   = BUILD FAILED, OR test report shows failures
     #   PASS   = BUILD SUCCESSFUL and tests=1 with 0 failures/errors in report XML
     #   SKIP   = no test ran (file missing, @EnabledIf returned false)
+    report_xml="$ROOT/build/test-results/test/TEST-fr.zeffut.multiview.merge.MergeIntegrationTest.xml"
     verdict="FAIL"
     if grep -q "BUILD SUCCESSFUL" "$log"; then
         report_xml="$ROOT/build/test-results/test/TEST-fr.zeffut.multiview.merge.MergeIntegrationTest.xml"
         if [ -f "$report_xml" ]; then
-            if grep -q 'tests="1"' "$report_xml" && grep -q 'failures="0"' "$report_xml" && grep -q 'errors="0"' "$report_xml"; then
+            if grep -q 'tests="1"' "$report_xml" && grep -q 'failures="0"' "$report_xml" && grep -q 'errors="0"' "$report_xml" && grep -q 'skipped="0"' "$report_xml"; then
                 verdict="PASS"
             elif grep -q 'tests="0"' "$report_xml" || grep -q 'skipped="1"' "$report_xml"; then
                 verdict="SKIP"
@@ -158,7 +164,7 @@ for v in "${versions[@]}"; do
     t="${times[$i]}s"
     st="${all_stats[$i]:-(no stats)}"
     printf "%-12s %-7s %-8s %s\n" "$v" "$s" "$t" "$st"
-    if [ "$s" = "FAIL" ]; then
+    if [ "$s" != "PASS" ]; then
         overall_pass=false
     fi
     i=$((i + 1))

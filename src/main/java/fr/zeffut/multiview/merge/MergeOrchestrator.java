@@ -171,7 +171,7 @@ public final class MergeOrchestrator {
                             + "), fallback metadata.name");
                 }
                 alignSources.add(new TimelineAligner.Source(
-                        r.folder().getFileName().toString(),
+                        options.sources().get(i).getFileName().toString(),
                         anchor,
                         r.metadata().name(),
                         r.metadata().totalTicks(),
@@ -639,10 +639,75 @@ public final class MergeOrchestrator {
         List<String> mainRegistry = extractRegistryFromFirstSegment(
                 ctx.sources.get(ctx.primarySourceIdx));
 
+        // Identity-only prepass: resolve a future spawn UUID before a reference can
+        // escape into the output. Packet bodies are streamed, never retained.
+        // Capture complete real profiles from ADD_PLAYER packets, including secondary
+        // snapshots and later announcements, before deciding what to synthesize.
+        int prepassPiuId = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_PLAYER_INFO_UPDATE);
+        Map<UUID, com.mojang.authlib.GameProfile> realProfiles = new java.util.HashMap<>();
+        entityRewriter.beginIdentityIndex();
+        for (int source = 0; source < ctx.sources.size(); source++) {
+            UUID playerUuid = null;
+            java.util.Set<Integer> indexedPlayerIds = new java.util.HashSet<>();
+            try (Stream<PacketEntry> identityStream = FlashbackReader.stream(ctx.sources.get(source))) {
+                Iterator<PacketEntry> entries = identityStream.iterator();
+                while (entries.hasNext()) {
+                    if (Thread.currentThread().isInterrupted()) throw new IOException("Merge cancelled during identity prepass");
+                    PacketEntry entry = entries.next();
+                    // Later snapshots are seek checkpoints, not new timeline events.
+                    if (entry.inSnapshot() && entry.tick() != 0) continue;
+                    int absoluteTick = ctx.toAbsTick(source, entry.tick());
+                    if (entry.action() instanceof Action.GamePacket gp) {
+                        entityRewriter.indexGamePacket(source, absoluteTick, ActionType.encode(gp));
+                        if (PacketClassifier.readPacketId(gp.bytes()) == prepassPiuId) {
+                            io.netty.buffer.ByteBuf raw = io.netty.buffer.Unpooled.wrappedBuffer(gp.bytes());
+                            try {
+                                fr.zeffut.multiview.format.VarInts.readVarInt(raw);
+                                var packet = net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.STREAM_CODEC.decode(
+                                        new net.minecraft.network.RegistryFriendlyByteBuf(raw, net.minecraft.core.RegistryAccess.EMPTY));
+                                if (packet.actions().contains(net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER)) {
+                                    for (var info : packet.entries()) {
+                                        var p = info.profile();
+                                        if (p == null || p.name() == null || p.name().isEmpty()) continue;
+                                        var old = realProfiles.get(p.id());
+                                        if (old == null || (old.properties().isEmpty() && !p.properties().isEmpty())
+                                                || (p.properties().values().stream().anyMatch(prop -> prop.signature() != null)
+                                                && old.properties().values().stream().noneMatch(prop -> prop.signature() != null))) {
+                                            if (old == null && realProfiles.size() >= 10000) throw new IOException("Too many real player profiles");
+                                            realProfiles.put(p.id(), p);
+                                        }
+                                    }
+                                }
+                            } catch (RuntimeException ex) {
+                                throw new IOException("Invalid player info in identity prepass", ex);
+                            } finally { raw.release(); }
+                        }
+                    } else if (entry.action() instanceof Action.CreatePlayer cp) {
+                        playerUuid = SecondaryPlayerSynthesizer.extractUuid(cp.bytes());
+                        if (playerUuid != null && entityRewriter.indexedPlayerId(source) >= 0) {
+                            entityRewriter.indexIdentity(source, entityRewriter.indexedPlayerId(source), absoluteTick, playerUuid);
+                            if (source == ctx.primarySourceIdx) entityRewriter.bindPrimaryPlayer(source, playerUuid);
+                        }
+                    } else if (playerUuid != null && entry.action() instanceof Action.Unknown unknown
+                            && ("flashback:action/accurate_player_position_optional".equals(unknown.id())
+                            || "flashback:action/accurate_player_position".equals(unknown.id()))) {
+                        int localId = SecondaryPlayerSynthesizer.readAccuratePositionEntityId(unknown.payload());
+                        if (localId >= 0 && indexedPlayerIds.add(localId)) {
+                            entityRewriter.indexIdentity(source, localId, absoluteTick, playerUuid);
+                        }
+                    }
+                }
+            }
+        }
+
         // PLAYER_INFO_UPDATE deduper — created early so the snapshot copy below can
         // pre-register UUIDs seen in primary's snapshot section (otherwise primary's
         // live PIU(ADD_PLAYER) for the same player produces a second "joined" line).
         PlayerInfoUpdateDeduper playerInfoDeduper = new PlayerInfoUpdateDeduper();
+        for (int sourceIdx = 0; sourceIdx < ctx.sources.size(); sourceIdx++) {
+            entityMerger.setSourceEndTick(sourceIdx, ctx.toAbsTick(sourceIdx,
+                    ctx.sources.get(sourceIdx).metadata().totalTicks()));
+        }
         int idPlayerInfoUpdate;
         try {
             idPlayerInfoUpdate = GamePacketDispatch.findId(GamePacketTypes.CLIENTBOUND_PLAYER_INFO_UPDATE);
@@ -681,10 +746,24 @@ public final class MergeOrchestrator {
                 SegmentReader snapshotReader = new SegmentReader(
                         firstSeg.getFileName().toString(), firstSegBuf);
                 int srcGamePacketOrd = snapshotReader.registry().indexOf(ActionType.GAME_PACKET);
+                int srcMoveEntitiesOrd = snapshotReader.registry().indexOf(ActionType.MOVE_ENTITIES);
                 while (snapshotReader.hasNext() && snapshotReader.isPeekInSnapshot()) {
                     SegmentReader.RawAction raw = snapshotReader.nextRaw();
                     byte[] snapshotPayload = raw.payload();
+                    if (raw.ordinal() == snapshotReader.registry().indexOf(ActionType.CREATE_PLAYER)) {
+                        entityRewriter.observePrimaryPlayer(ctx.primarySourceIdx,
+                                ctx.toAbsTick(ctx.primarySourceIdx, 0), snapshotPayload);
+                    }
+                    if (raw.ordinal() == srcMoveEntitiesOrd) {
+                        snapshotPayload = entityRewriter.processMoveEntities(ctx.primarySourceIdx,
+                                ctx.toAbsTick(ctx.primarySourceIdx, 0), snapshotPayload);
+                    }
                     if (raw.ordinal() == srcGamePacketOrd) {
+                        if (classifier.classify(new Action.GamePacket(snapshotPayload)) == Category.ENTITY) {
+                            snapshotPayload = entityRewriter.rewrite(ctx.primarySourceIdx,
+                                    ctx.toAbsTick(ctx.primarySourceIdx, 0), snapshotPayload);
+                            if (snapshotPayload == null) continue;
+                        }
                         snapshotPayload = worldRewriter.rewriteSnapshot(
                                 ctx.primarySourceIdx, ctx.toAbsTick(ctx.primarySourceIdx, 0), snapshotPayload);
                         if (snapshotPayload == null) {
@@ -718,11 +797,10 @@ public final class MergeOrchestrator {
         // Open streaming file for c0.flashback — avoids accumulating the entire live stream
         // in a single in-memory ByteBuf (which would hit Netty's Integer.MAX_VALUE array limit
         // for long replays). Live actions are written directly to disk from this point on.
-        int currentSegmentIdx = 0;
-        int currentSegmentStart = 0;
         currentWriter.openStreamingFile(destTmp.resolve("c0.flashback"));
 
         int nextTickOrdinal    = mainRegistry.indexOf(ActionType.NEXT_TICK);
+        if (nextTickOrdinal < 0) throw new IOException("Primary registry lacks flashback:next_tick; cannot preserve replay timeline");
         int gamePacketOrdinal  = mainRegistry.indexOf(ActionType.GAME_PACKET);
         int cacheRefOrdinal    = mainRegistry.indexOf(ActionType.CACHE_CHUNK);
 
@@ -844,7 +922,15 @@ public final class MergeOrchestrator {
                 // above (for the primary source) or should not be duplicated in the live stream.
                 // Do this BEFORE intercalating NextTick actions: snapshot entries have tick==baseTick
                 // (typically 0) which would otherwise trigger spurious NextTick intercalation.
-                if (cur.head().inSnapshot()) {
+                boolean secondaryInitialEntitySnapshot = cur.head().inSnapshot()
+                        && cur.sourceIdx() != ctx.primarySourceIdx && cur.head().tick() == 0
+                        && (classifier.classify(cur.head().action()) == Category.ENTITY
+                            || classifier.classify(cur.head().action()) == Category.LOCAL_PLAYER
+                            || classifier.classify(cur.head().action()) == Category.WORLD
+                            || classifier.classify(cur.head().action()) == Category.CACHE_REF
+                            || (cur.head().action() instanceof Action.GamePacket initialPacket
+                                && PacketClassifier.readPacketId(initialPacket.bytes()) == snapshotPiuId));
+                if (cur.head().inSnapshot() && !secondaryInitialEntitySnapshot) {
                     // Advance cursor and continue without emitting
                     if (cur.it().hasNext()) {
                         pq.add(new SourceCursor(cur.sourceIdx(), cur.it(), cur.it().next()));
@@ -877,56 +963,18 @@ public final class MergeOrchestrator {
                             tickAbs, sanityBound, ctx.report.mergedTotalTicks, cur.sourceIdx()));
                 }
 
-                // Segment boundary check: if we've accumulated SEGMENT_TICKS ticks in the current
-                // segment, close it and open the next one before intercalating more NextTicks.
-                // tickAbsEmitted tracks global ticks; segment duration = tickAbsEmitted - currentSegmentStart.
-                // We check against tickAbs (the incoming absolute tick) so we roll over before
-                // emitting NextTicks that would belong to the new segment.
-                if (tickAbsEmitted - currentSegmentStart >= SEGMENT_TICKS) {
-                    int segDuration = tickAbsEmitted - currentSegmentStart;
-                    String segName = "c" + currentSegmentIdx + ".flashback";
-                    currentWriter.finishStreaming();
-                    segmentDurations.put(segName, segDuration);
-
-                    // Open next segment; seed snapshot from primary source's segment
-                    // covering this tick boundary so Flashback seek doesn't show a void world.
-                    currentSegmentIdx++;
-                    currentSegmentStart = tickAbsEmitted;
-                    String nextSegName = "c" + currentSegmentIdx + ".flashback";
-                    currentWriter = new SegmentWriter(nextSegName, mainRegistry);
-                    writerHolder[0] = currentWriter;
-                    copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
-                            currentWriter, currentSegmentStart, mainRegistry, ctx.report,
-                            snapshotPiuId, worldRewriter, ctx.primarySourceIdx);
-                    currentWriter.endSnapshot();
-                    currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
-                }
-
+                // One segment deliberately: every seek reconstructs from the initial merged snapshot.
                 // Intercalate NextTick actions up to tickAbs
                 while (tickAbsEmitted < tickAbs) {
+                    byte[] endedEntities = entityRewriter.finishSourcesThrough(tickAbsEmitted);
+                    if (endedEntities != null && gamePacketOrdinal >= 0) {
+                        currentWriter.writeLiveAction(gamePacketOrdinal, endedEntities);
+                    }
                     tickAbsEmitted++;
                     if (nextTickOrdinal >= 0) {
                         currentWriter.writeLiveAction(nextTickOrdinal, new byte[0]);
                     }
-                    // Check segment boundary mid-intercalation as well: if we just crossed
-                    // a SEGMENT_TICKS boundary while filling in missing ticks, roll over.
-                    if (tickAbsEmitted - currentSegmentStart >= SEGMENT_TICKS && tickAbsEmitted < tickAbs) {
-                        int segDuration = tickAbsEmitted - currentSegmentStart;
-                        String segName = "c" + currentSegmentIdx + ".flashback";
-                        currentWriter.finishStreaming();
-                        segmentDurations.put(segName, segDuration);
 
-                        currentSegmentIdx++;
-                        currentSegmentStart = tickAbsEmitted;
-                        String nextSegName = "c" + currentSegmentIdx + ".flashback";
-                        currentWriter = new SegmentWriter(nextSegName, mainRegistry);
-                        writerHolder[0] = currentWriter;
-                        copyPrimarySnapshotForTick(ctx.sources.get(ctx.primarySourceIdx),
-                                currentWriter, currentSegmentStart, mainRegistry, ctx.report,
-                                snapshotPiuId, worldRewriter, ctx.primarySourceIdx);
-                        currentWriter.endSnapshot();
-                        currentWriter.openStreamingFile(destTmp.resolve(nextSegName));
-                    }
                 }
 
                 Category cat = classifier.classify(cur.head().action());
@@ -957,6 +1005,7 @@ public final class MergeOrchestrator {
                         if (cur.head().action() instanceof Action.CreatePlayer cp) {
                             entityRewriter.recordLocalPlayerUuid(cur.sourceIdx(), cp.bytes());
                             if (cur.sourceIdx() == ctx.primarySourceIdx) {
+                                entityRewriter.observePrimaryPlayer(cur.sourceIdx(), tickAbs, cp.bytes());
                                 writeActionToMain(currentWriter, mainRegistry,
                                         cur.head().action(), ctx.report);
                             } else if (!secondarySpawned[cur.sourceIdx()]
@@ -966,19 +1015,29 @@ public final class MergeOrchestrator {
                                 UUID uuid = SecondaryPlayerSynthesizer.extractUuid(cp.bytes());
                                 com.mojang.authlib.GameProfile profile =
                                         SecondaryPlayerSynthesizer.extractGameProfile(cp.bytes());
+                                var realProfile = realProfiles.get(uuid);
+                                // A captured ADD_PLAYER is authoritative, regardless of the
+                                // name prefix. Real usernames may also start with Player-.
+                                if (realProfile != null) profile = realProfile;
                                 byte[] infoPayload = secondarySynth.synthesizePlayerInfoUpdate(profile);
+                                UUID playerUuid = uuid != null ? uuid : profile.id();
+                                int registeredId = entityMerger.registerAddEntity(cur.sourceIdx(), -1,
+                                        playerUuid, "minecraft:player", tickAbs, 0, 0, 0);
                                 byte[] addEntityPayload = secondarySynth.synthesizeAddEntity(
-                                        cur.sourceIdx(), uuid != null ? uuid : profile.id());
+                                        cur.sourceIdx(), playerUuid);
                                 int fakeId = secondarySynth.getFakeEntityId(cur.sourceIdx());
-                                if (infoPayload != null && addEntityPayload != null && fakeId >= 0) {
-                                    currentWriter.writeLiveAction(gamePacketOrdinal, infoPayload);
-                                    currentWriter.writeLiveAction(gamePacketOrdinal, addEntityPayload);
+                                if (infoPayload != null && addEntityPayload != null && fakeId == registeredId) {
+                                    if (playerInfoDeduper.shouldEmitInfoUpdate(infoPayload)) {
+                                        currentWriter.writeLiveAction(gamePacketOrdinal, infoPayload);
+                                    }
+                                    if (entityMerger.shouldEmitAddEntity(fakeId)) {
+                                        currentWriter.writeLiveAction(gamePacketOrdinal, addEntityPayload);
+                                    }
                                     secondarySpawned[cur.sourceIdx()] = true;
                                     secondaryFakeEntityId[cur.sourceIdx()] = fakeId;
                                 } else {
-                                    LOG.warn("MergeOrchestrator: secondary player synthesis "
-                                            + "failed for source " + cur.sourceIdx()
-                                            + " — player will remain invisible.");
+                                    throw new IOException("Secondary player synthesis failed for source "
+                                            + cur.sourceIdx());
                                 }
                             }
                         } else if (cur.head().action() instanceof Action.Unknown u
@@ -995,9 +1054,8 @@ public final class MergeOrchestrator {
                                 // through the standard IdRemapper path.
                                 int localEid = SecondaryPlayerSynthesizer
                                         .readAccuratePositionEntityId(u.payload());
-                                if (localEid >= 0
-                                        && !idRemapper.contains(cur.sourceIdx(), localEid)) {
-                                    idRemapper.assignExisting(cur.sourceIdx(), localEid,
+                                if (localEid >= 0) {
+                                    entityMerger.bindSyntheticLocalId(cur.sourceIdx(), localEid,
                                             secondaryFakeEntityId[cur.sourceIdx()]);
                                 }
                                 byte[] rewritten = SecondaryPlayerSynthesizer
@@ -1077,11 +1135,9 @@ public final class MergeOrchestrator {
                         // packets we will drop anyway.
                         if (cur.head().action() instanceof Action.GamePacket gp) {
                             int pid = PacketClassifier.readPacketId(gp.bytes());
-                            if (cur.sourceIdx() != ctx.primarySourceIdx
-                                    && idRemoveEntities >= 0
-                                    && pid == idRemoveEntities) {
-                                // drop secondary despawns
-                            } else {
+                            {
+                                // All observers participate in lifecycle tracking. A source
+                                // removal emits only when no active source still observes it.
                                 byte[] rewritten = entityRewriter.rewrite(
                                         cur.sourceIdx(), tickAbs, gp.bytes());
                                 // Cross-source dedup of *movement* packets: after entity-ID
@@ -1101,8 +1157,10 @@ public final class MergeOrchestrator {
                                      || (idTeleportEntity >= 0 && pid == idTeleportEntity)
                                      || (idEntityPositionSync >= 0 && pid == idEntityPositionSync)
                                      || (idRotateHead >= 0 && pid == idRotateHead);
-                                if (isMovementPacket
-                                        && !globalDeduper.shouldEmit(pid, tickAbs, rewritten)) {
+                                if (rewritten == null) {
+                                    ctx.report.stats.globalPacketsDeduped++;
+                                } else if (isMovementPacket
+                                    && !globalDeduper.shouldEmit(pid, tickAbs, rewritten)) {
                                     ctx.report.stats.globalPacketsDeduped++;
                                 } else if (gamePacketOrdinal >= 0) {
                                     currentWriter.writeLiveAction(gamePacketOrdinal, rewritten);
@@ -1271,11 +1329,20 @@ public final class MergeOrchestrator {
                 }
             }
 
-            // Close the last (or only) segment
-            String lastSegName = "c" + currentSegmentIdx + ".flashback";
-            int lastSegDuration = tickAbsEmitted - currentSegmentStart;
+            // Preserve the complete declared timeline, including a trailing silent interval.
+            if (tickAbsEmitted > ctx.report.mergedTotalTicks) {
+                throw new IOException("Live actions exceed declared merged duration: " + tickAbsEmitted
+                        + " > " + ctx.report.mergedTotalTicks);
+            }
+            while (tickAbsEmitted < ctx.report.mergedTotalTicks) {
+                byte[] endedEntities = entityRewriter.finishSourcesThrough(tickAbsEmitted);
+                if (endedEntities != null && gamePacketOrdinal >= 0)
+                    currentWriter.writeLiveAction(gamePacketOrdinal, endedEntities);
+                currentWriter.writeLiveAction(nextTickOrdinal, new byte[0]);
+                tickAbsEmitted++;
+            }
             currentWriter.finishStreaming();
-            segmentDurations.put(lastSegName, lastSegDuration);
+            segmentDurations.put("c0.flashback", ctx.report.mergedTotalTicks);
 
             // Update entity merger stats
             ctx.report.stats.entitiesMergedByUuid       = entityMerger.uuidMergedCount();

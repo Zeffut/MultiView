@@ -51,6 +51,7 @@ public final class PlayerInfoUpdateDeduper {
     private static final int ADD_PLAYER_BIT = 0x01;
 
     private final Set<UUID> announcedUuids = new HashSet<>();
+    private final java.util.Map<UUID, com.mojang.authlib.GameProfile> announcedProfiles = new java.util.HashMap<>();
     private int duplicateAddDropped;
     private int removesProcessed;
     private int codecDecodedCount;
@@ -99,7 +100,8 @@ public final class PlayerInfoUpdateDeduper {
                 boolean allKnown = true;
                 for (ClientboundPlayerInfoUpdatePacket.Entry entry : pkt.entries()) {
                     UUID u = entry.profileId();
-                    if (u != null && !announcedUuids.contains(u)) {
+                    if (u != null && (!announcedUuids.contains(u)
+                            || !java.util.Objects.equals(announcedProfiles.get(u), entry.profile()))) {
                         allKnown = false;
                         newUuids.add(u);
                     }
@@ -112,6 +114,10 @@ public final class PlayerInfoUpdateDeduper {
                     return false;
                 }
                 announcedUuids.addAll(newUuids);
+                for (var entry : pkt.entries()) {
+                    if (entry.profileId() != null && entry.profile() != null)
+                        announcedProfiles.put(entry.profileId(), entry.profile());
+                }
                 return true;
             } catch (Throwable t) {
                 codecFailureCount++;

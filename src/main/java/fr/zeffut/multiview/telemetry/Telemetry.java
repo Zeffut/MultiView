@@ -18,6 +18,12 @@ public final class Telemetry {
     private static volatile TelemetryConfig config;
     private static volatile TelemetryContext context;
     private static volatile TelemetrySink sink;
+    // Process/environment exclusions cannot be overridden by the user command.
+    private static volatile boolean environmentDisabled = true;
+
+    private static boolean propertyDisabled() {
+        return "false".equalsIgnoreCase(System.getProperty("multiview.telemetry", "true"));
+    }
 
     private Telemetry() {}
 
@@ -25,28 +31,31 @@ public final class Telemetry {
      * Production init. Loads config, decides enablement (config flag, -Dmultiview.telemetry=false,
      * dev env), builds the real sink. Best-effort: any failure leaves telemetry disabled.
      */
-    public static void init(java.nio.file.Path configFile, String uiCapability, boolean devEnv) {
+    public static synchronized void init(java.nio.file.Path configFile, String uiCapability, boolean devEnv) {
+        shutdown();
         try {
             TelemetryConfig cfg = TelemetryConfig.load(configFile);
-            boolean propDisabled = "false".equalsIgnoreCase(
-                    System.getProperty("multiview.telemetry", "true"));
-            boolean enabled = cfg.isEnabled() && !propDisabled && !devEnv;
+            environmentDisabled = devEnv || propertyDisabled();
+            boolean enabled = cfg.isEnabled() && !environmentDisabled;
             config = cfg;
             context = TelemetryContext.fromEnvironment(uiCapability);
             sink = enabled ? new PostHogClient(API_KEY, HOST) : new NoopSink();
             if (enabled) {
-                LOG.info("[MultiView] telemetry enabled (anonymous, opt-out via /mv telemetry off).");
+                LOG.info("[MultiView] telemetry enabled (pseudonymous, opt-out via /mv telemetry off).");
             } else {
                 LOG.info("[MultiView] telemetry disabled (config/prop/dev).");
             }
         } catch (Throwable t) {
             LOG.warn("[MultiView] telemetry init failed, disabling: {}", t.getMessage());
+            environmentDisabled = true;
             sink = new NoopSink();
         }
     }
 
     /** Test seam: inject config/context/sink directly. */
-    public static void initForTest(TelemetryConfig cfg, TelemetryContext ctx, TelemetrySink s) {
+    public static synchronized void initForTest(TelemetryConfig cfg, TelemetryContext ctx, TelemetrySink s) {
+        shutdown();
+        environmentDisabled = propertyDisabled();
         config = cfg;
         context = ctx;
         sink = cfg.isEnabled() ? s : new NoopSink();
@@ -78,7 +87,8 @@ public final class Telemetry {
         return cfg == null ? fallback : cfg.setting(key, fallback);
     }
 
-    public static void capture(String event, Map<String, Object> properties) {
+    public static synchronized void capture(String event, Map<String, Object> properties) {
+        if (!isEnabled()) return;
         TelemetrySink s = sink;
         TelemetryContext ctx = context;
         TelemetryConfig cfg = config;
@@ -92,7 +102,8 @@ public final class Telemetry {
 
     public static boolean isEnabled() {
         TelemetryConfig cfg = config;
-        return cfg != null && cfg.isEnabled() && !(sink instanceof NoopSink);
+        return cfg != null && cfg.isEnabled() && !environmentDisabled && !propertyDisabled()
+                && sink != null && !(sink instanceof NoopSink);
     }
 
     public static String distinctId() {
@@ -101,9 +112,11 @@ public final class Telemetry {
     }
 
     /** Turn telemetry on/off at runtime (persists to config). */
-    public static void setEnabled(boolean enabled) {
+    public static synchronized void setEnabled(boolean enabled) {
         TelemetryConfig cfg = config;
         if (cfg == null) return;
+        // Explicit opt-in cannot override an environment exclusion or change persisted consent.
+        if (enabled && (environmentDisabled || propertyDisabled())) return;
         if (!enabled && isEnabled()) {
             capture(EventNames.EVT_TELEMETRY_OPTOUT); // last event before going dark
             flush();
@@ -119,7 +132,8 @@ public final class Telemetry {
         if (s != null) try { s.flush(); } catch (Throwable ignored) {}
     }
 
-    public static void shutdown() {
+    public static synchronized void shutdown() {
+        environmentDisabled = true;
         TelemetrySink s = sink;
         if (s != null) try { s.shutdown(); } catch (Throwable ignored) {}
         sink = null;

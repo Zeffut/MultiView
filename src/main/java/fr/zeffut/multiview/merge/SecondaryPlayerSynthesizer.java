@@ -101,9 +101,13 @@ public final class SecondaryPlayerSynthesizer {
     public static UUID extractUuid(byte[] createPlayerBytes) {
         if (createPlayerBytes == null || createPlayerBytes.length < 16) return null;
         ByteBuf buf = Unpooled.wrappedBuffer(createPlayerBytes);
-        long msb = buf.readLong();
-        long lsb = buf.readLong();
-        return new UUID(msb, lsb);
+        try {
+            long msb = buf.readLong();
+            long lsb = buf.readLong();
+            return new UUID(msb, lsb);
+        } finally {
+            buf.release();
+        }
     }
 
     /**
@@ -115,14 +119,12 @@ public final class SecondaryPlayerSynthesizer {
      *   UUID         : 2 × long  (16 bytes)
      *   x, y, z      : 3 × double (24 bytes)
      *   yaw, pitch, headYaw : 3 × float (12 bytes)
-     *   EntityType   : via EntityType.STREAM_CODEC (RegistryFriendlyByteBuf codec)
+     *   velocity     : 3 × double (24 bytes)
      *   GameProfile  : via ByteBufCodecs.GAME_PROFILE (ByteBuf codec)
      *   …remainder…
      * </pre>
      *
-     * Parsing the EntityType codec requires Bootstrap to be initialised.  If it
-     * fails, we fall back to constructing a profile with just the UUID and a
-     * placeholder name.
+     * Invalid or truncated payloads fall back to the UUID and a placeholder name.
      *
      * @param createPlayerBytes raw CreatePlayer payload
      * @return parsed {@link GameProfile}, or a stub profile on failure
@@ -133,30 +135,19 @@ public final class SecondaryPlayerSynthesizer {
             return new GameProfile(UUID.randomUUID(), "Player-unknown");
         }
 
-        // Try to parse full GameProfile from payload
+        ByteBuf raw = Unpooled.wrappedBuffer(createPlayerBytes);
         try {
-            ByteBuf raw = Unpooled.wrappedBuffer(createPlayerBytes);
-            // Skip UUID (16 bytes = 2 longs)
-            raw.skipBytes(16);
-            // Skip x, y, z (3 doubles = 24 bytes)
-            raw.skipBytes(24);
-            // Skip yaw, pitch, headYaw (3 floats = 12 bytes)
-            raw.skipBytes(12);
-
-            // Skip EntityType encoded via EntityType.STREAM_CODEC (RegistryFriendlyByteBuf)
-            // EntityType is encoded as a VarInt registry ID
-            RegistryFriendlyByteBuf regBuf = new RegistryFriendlyByteBuf(raw, RegistryAccess.EMPTY);
-            EntityType.STREAM_CODEC.decode(regBuf);
-
-            // Now decode GameProfile via ByteBufCodecs.GAME_PROFILE
-            // GameProfile codec: readUUID + readString (VarInt-prefixed UTF-8) + properties
+            // UUID, position, rotation, then the three velocity doubles.
+            raw.skipBytes(16 + 24 + 12 + 24);
             GameProfile profile = ByteBufCodecs.GAME_PROFILE.decode(raw);
-            if (profile != null && profile.name() != null && !profile.name().isEmpty()) {
+            if (profile != null && uuid.equals(profile.id()) && profile.name() != null && !profile.name().isEmpty()) {
                 return profile;
             }
-        } catch (Throwable t) {
+        } catch (Exception t) {
             LOG.debug("SecondaryPlayerSynthesizer: could not extract GameProfile from CreatePlayer payload: "
                     + t.getMessage() + " — using placeholder name");
+        } finally {
+            raw.release();
         }
 
         // Fallback: use UUID + placeholder name derived from UUID prefix
@@ -179,8 +170,7 @@ public final class SecondaryPlayerSynthesizer {
      * <pre>
      *   byte  actions EnumSet   (1 byte: bit 0 = ADD_PLAYER set → 0x01)
      *   VarInt entry count      (1 → 0x01)
-     *   UUID                    (2 longs = 16 bytes)
-     *   GameProfile             (via ByteBufCodecs.GAME_PROFILE)
+     *   GameProfile             (UUID, player name, properties via ByteBufCodecs.GAME_PROFILE)
      * </pre>
      *
      * @param profile game profile (UUID + name); may be a stub placeholder
@@ -201,11 +191,8 @@ public final class SecondaryPlayerSynthesizer {
             // 1 entry
             pbuf.writeVarInt(1);
 
-            // Entry UUID (16 bytes)
-            pbuf.writeLong(profile.id().getMostSignificantBits());
-            pbuf.writeLong(profile.id().getLeastSignificantBits());
-
-            // ADD_PLAYER action data: GameProfile via ByteBufCodecs.GAME_PROFILE
+            // GAME_PROFILE already includes the entry UUID, followed by name and
+            // properties. Writing a separate UUID here corrupts ADD_PLAYER.
             ByteBufCodecs.GAME_PROFILE.encode(body, profile);
 
             return prependPacketId(idPlayerInfoUpdate, body);
@@ -227,13 +214,14 @@ public final class SecondaryPlayerSynthesizer {
      * @param uuid      the secondary player's UUID (from CreateLocalPlayer)
      * @return raw payload bytes, or {@code null} on failure
      */
-    private EntityType<?> playerEntityType() throws ReflectiveOperationException {
-        try {
-            return (EntityType<?>) EntityType.class.getField("PLAYER").get(null);
-        } catch (NoSuchFieldException absentIn26_2) {
-            Class<?> types = Class.forName("net.minecraft.world.entity.EntityTypes");
-            return (EntityType<?>) types.getField("PLAYER").get(null);
-        }
+    private EntityType<?> playerEntityType() {
+        // Registry keys are stable in production. Reflective Mojang class/field
+        // names are not remapped by Loom on the obfuscated 1.21.x runtimes.
+        var registry = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE;
+        var key = registry.keySet().stream()
+                .filter(id -> "minecraft:player".equals(id.toString()))
+                .findFirst().orElseThrow(() -> new IllegalStateException("Missing player entity type"));
+        return registry.getValue(key);
     }
 
     public byte[] synthesizeAddEntity(int sourceIdx, UUID uuid) {
@@ -254,7 +242,7 @@ public final class SecondaryPlayerSynthesizer {
             );
 
             ByteBuf body = Unpooled.buffer(64);
-            RegistryFriendlyByteBuf registryBuf = new RegistryFriendlyByteBuf(body, RegistryAccess.EMPTY);
+            RegistryFriendlyByteBuf registryBuf = new RegistryFriendlyByteBuf(body, RegistryAccess.fromRegistryOfRegistries(net.minecraft.core.registries.BuiltInRegistries.REGISTRY));
             ClientboundAddEntityPacket.STREAM_CODEC.encode(registryBuf, packet);
 
             return prependPacketId(idAddEntity, body);

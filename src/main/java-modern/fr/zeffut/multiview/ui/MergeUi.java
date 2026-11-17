@@ -8,8 +8,6 @@ import com.moulberry.flashback.screen.select_replay.SelectReplayScreen;
 import fr.zeffut.multiview.MultiViewMod;
 import fr.zeffut.multiview.merge.MergeOptions;
 import fr.zeffut.multiview.merge.MergeOrchestrator;
-import fr.zeffut.multiview.merge.OverlapValidator;
-import fr.zeffut.multiview.merge.PacketIdProvider;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents;
 import net.minecraft.client.Minecraft;
@@ -199,7 +197,8 @@ public final class MergeUi {
 
     private static boolean handleRowClick(SelectionState state, SelectReplayScreen srs,
                                           double mouseX, double mouseY, int button) {
-        if (button != 0) return true;
+        // This constant is target-specific: GLFW uses 0 (26.1/26.2), SDL uses 1 (26.3).
+        if (button != com.mojang.blaze3d.platform.InputConstants.MOUSE_BUTTON_LEFT) return true;
 
         ReplaySelectionList list = getSelectionList(srs);
         if (list == null) return true;
@@ -291,13 +290,6 @@ public final class MergeUi {
         return new long[]{ end - durationMs, end };
     }
 
-    /**
-     * Cache of overlap-validation results, keyed by the immutable Set of selected paths.
-     * Validation reads ~1200 ticks from each replay file, so we memoise to keep checkbox
-     * toggles responsive when the user revisits a previously-validated selection.
-     */
-    private static final Map<Set<Path>, OverlapValidator.Result> VALIDATION_CACHE = new HashMap<>();
-
     private static void updateMergeButton(SelectionState state) {
         if (state.mergeButton == null) return;
         int n = state.checkedPaths.size();
@@ -306,7 +298,7 @@ public final class MergeUi {
                 fr.zeffut.multiview.telemetry.EventNames.EVT_UI_FILE_SELECTED,
                 java.util.Map.of("selected_count", n));
 
-        if (n < 2) {
+        if (!MergeUiLayout.canMergeSelection(n)) {
             state.mergeButton.active = false;
             state.mergeButton.setMessage(Component.translatable("multiview.button.merge_selected"));
             state.mergeButton.setTooltip(null);
@@ -315,48 +307,10 @@ public final class MergeUi {
 
         Component countMsg = Component.translatable("multiview.button.merge_selected.count", n);
 
-        // Same-moment guard (cheap, no I/O): an empty replay (0s duration) can't be a merge source,
-        // and the non-empty replays must have been recorded during overlapping real-world windows.
-        // Replays from different sessions/days don't overlap here, which the gameTime probe can't
-        // reliably tell apart — so this is what greys the button out.
-        boolean anyEmpty = state.checkedPaths.stream()
-                .map(state.recWindows::get)
-                .anyMatch(w -> w != null && w[1] <= w[0]);
-        long[][] windows = state.checkedPaths.stream()
-                .map(state.recWindows::get)
-                .filter(w -> w != null && w[1] > w[0])
-                .toArray(long[][]::new);
-        if (anyEmpty || (windows.length >= 2 && !MergeUiLayout.allWindowsOverlap(windows))) {
-            fr.zeffut.multiview.telemetry.Telemetry.capture(
-                    fr.zeffut.multiview.telemetry.EventNames.EVT_OVERLAP_VALIDATION_FAILED,
-                    java.util.Map.of("selected_count", n, "reason", "recording_time"));
-            state.mergeButton.active = false;
-            state.mergeButton.setMessage(countMsg);
-            state.mergeButton.setTooltip(Tooltip.create(
-                    Component.translatable("multiview.button.merge_selected.no_overlap")));
-            return;
-        }
-
-        Set<Path> snapshot = Set.copyOf(state.checkedPaths);
-        OverlapValidator.Result result = VALIDATION_CACHE.computeIfAbsent(snapshot, s ->
-                OverlapValidator.validate(new ArrayList<>(s), PacketIdProvider.minecraftRuntime()));
-
-        if (result.status() == OverlapValidator.Status.NO_OVERLAP) {
-            fr.zeffut.multiview.telemetry.Telemetry.capture(
-                    fr.zeffut.multiview.telemetry.EventNames.EVT_OVERLAP_VALIDATION_FAILED,
-                    java.util.Map.of("selected_count", n));
-            state.mergeButton.active = false;
-            state.mergeButton.setMessage(countMsg);
-            state.mergeButton.setTooltip(Tooltip.create(
-                    Component.translatable("multiview.button.merge_selected.no_overlap")));
-        } else {
-            // OK or UNKNOWN — both allow the merge to proceed. UNKNOWN means we couldn't
-            // probe a SetTime anchor in one of the replays; rather than blocking what we
-            // can't verify, we let the user try (in line with the product philosophy).
-            state.mergeButton.active = true;
-            state.mergeButton.setMessage(countMsg);
-            state.mergeButton.setTooltip(null);
-        }
+        // Disjoint recordings are valid: the merger preserves their gap.
+        state.mergeButton.active = MergeUiLayout.canMergeSelection(n);
+        state.mergeButton.setMessage(countMsg);
+        state.mergeButton.setTooltip(null);
     }
 
     private static void startMerge(SelectionState state, SelectReplayScreen parentScreen,

@@ -175,7 +175,17 @@ public final class SegmentWriter implements AutoCloseable {
         }
     }
 
+    // Flashback PlayableChunk loads the entire file using Files.readAllBytes into a
+    // single byte[]. Leave the conventional VM array-header margin; available heap
+    // can impose a substantially lower practical limit during playback.
+    static final long MAX_PLAYABLE_SEGMENT_BYTES = Integer.MAX_VALUE - 8L;
+
     private void writeNio(byte[] data) throws IOException {
+        if (streamingChannel.position() + (long) data.length > MAX_PLAYABLE_SEGMENT_BYTES) {
+            throw new IOException("Segment " + segmentName + " exceeds Flashback's single-byte-array limit ("
+                    + MAX_PLAYABLE_SEGMENT_BYTES + " bytes); cannot produce a playable mono-segment replay. "
+                    + "Use a smaller source or a multi-segment implementation with correct snapshots.");
+        }
         ByteBuffer buf = ByteBuffer.wrap(data);
         while (buf.hasRemaining()) {
             streamingChannel.write(buf);

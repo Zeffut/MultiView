@@ -53,6 +53,8 @@ build_one() {
         cp "$GRADLE_PROPS" "$ORIG_BACKUP"
     fi
 
+    cp "$ORIG_BACKUP" "$GRADLE_PROPS"
+
     # Merge version properties into gradle.properties
     python3 - "$GRADLE_PROPS" "$props" <<'PY'
 import sys
@@ -94,6 +96,10 @@ PY
     modver=$(grep "^mod_version=" "$GRADLE_PROPS" | cut -d= -f2)
     local src="$ROOT/build/libs/multiview-${modver}.jar"
     local dest="$ROOT/build/libs/multiview-${modver}-mc${version}.jar"
+    if [ ! -f "$src" ]; then
+        echo "ERROR: missing final jar $src" >&2
+        exit 1
+    fi
     if [ -f "$src" ] && [ "$src" != "$dest" ]; then
         cp "$src" "$dest"
         echo "OK Built -> $dest"
@@ -106,8 +112,10 @@ case "${1:-}" in
         list_versions | sed 's/^/  /'
         ;;
     --all)
+        mkdir -p "$ROOT/dist"
         for v in $(list_versions); do
             build_one "$v"
+            cp "$ROOT/build/libs/"*-mc"$v".jar "$ROOT/dist/"
         done
         ;;
     "")
