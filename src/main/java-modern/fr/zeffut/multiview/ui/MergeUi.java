@@ -197,7 +197,8 @@ public final class MergeUi {
 
     private static boolean handleRowClick(SelectionState state, SelectReplayScreen srs,
                                           double mouseX, double mouseY, int button) {
-        if (button != 0) return true;
+        // This constant is target-specific: GLFW uses 0 (26.1/26.2), SDL uses 1 (26.3).
+        if (button != com.mojang.blaze3d.platform.InputConstants.MOUSE_BUTTON_LEFT) return true;
 
         ReplaySelectionList list = getSelectionList(srs);
         if (list == null) return true;
